@@ -26,6 +26,11 @@ platform_test() {
 	$DIR/bin/corpline version >/dev/null 2>&1 || fail "程序无法在本机运行（$(uname -m)）。"
 }
 
+# 先复制成临时文件再改名：正在运行的程序不会被写坏，复制到一半失败也不会留下半个文件
+put() {
+	cp -f "$1" "$2.new" && chmod "$3" "$2.new" && mv -f "$2.new" "$2" || fail "复制 $(basename $1) 失败（存储空间不足？）"
+}
+
 install_now() {
 	if [ -f /koolshare/scripts/corpline_config.sh ]; then
 		echo_date "检测到旧版本，先停止运行中的服务…"
@@ -33,22 +38,25 @@ install_now() {
 	fi
 	echo_date "复制插件文件…"
 	mkdir -p /koolshare/bin /koolshare/scripts /koolshare/webs /koolshare/res /koolshare/configs/corpline
-	cp -f $DIR/bin/corpline /koolshare/bin/corpline
-	cp -f $DIR/scripts/corpline_config.sh /koolshare/scripts/
-	cp -f $DIR/webs/Module_corpline.asp /koolshare/webs/
-	cp -f $DIR/res/icon-corpline.png /koolshare/res/
-	[ -f $DIR/res/corpline-bg.png ] && cp -f $DIR/res/corpline-bg.png /koolshare/res/
-	[ -f $DIR/configs/china-domains.conf ] && cp -f $DIR/configs/china-domains.conf /koolshare/configs/corpline/
-	cp -f $DIR/uninstall.sh /koolshare/scripts/uninstall_corpline.sh
-	chmod 755 /koolshare/bin/corpline /koolshare/scripts/corpline_config.sh /koolshare/scripts/uninstall_corpline.sh
+	put $DIR/bin/corpline /koolshare/bin/corpline 755
+	put $DIR/scripts/corpline_config.sh /koolshare/scripts/corpline_config.sh 755
+	put $DIR/webs/Module_corpline.asp /koolshare/webs/Module_corpline.asp 644
+	put $DIR/res/icon-corpline.png /koolshare/res/icon-corpline.png 644
+	[ -f $DIR/res/corpline-bg.png ] && put $DIR/res/corpline-bg.png /koolshare/res/corpline-bg.png 644
+	[ -f $DIR/configs/china-domains.conf ] && put $DIR/configs/china-domains.conf /koolshare/configs/corpline/china-domains.conf 644
+	put $DIR/uninstall.sh /koolshare/scripts/uninstall_corpline.sh 755
 
-	echo_date "写入默认设置（只在首次安装时写，不覆盖已有设置）…"
-	[ -z "$(dbus get corpline_enable)" ] && dbus set corpline_enable=0
-	[ -z "$(dbus get corpline_server)" ] && dbus set corpline_server="vpn.xindong.com:8443"
-	[ -z "$(dbus get corpline_overseas_domains)" ] && dbus set corpline_overseas_domains="apple.com,mzstatic.com"
-	[ -z "$(dbus get corpline_cn_direct)" ] && dbus set corpline_cn_direct=0
-	[ -z "$(dbus get corpline_sensitivity)" ] && dbus set corpline_sensitivity=normal
-	[ -z "$(dbus get corpline_notify)" ] && dbus set corpline_notify=off
+	# 默认值只在第一次安装时写：之后用户清空的项（例如"走海外 DNS 的域名"）升级时不会被填回去
+	if [ -z "$(dbus get corpline_inited)" ]; then
+		echo_date "首次安装，写入默认设置…"
+		[ -z "$(dbus get corpline_enable)" ] && dbus set corpline_enable=0
+		[ -z "$(dbus get corpline_server)" ] && dbus set corpline_server="vpn.xindong.com:8443"
+		[ -z "$(dbus get corpline_overseas_domains)" ] && dbus set corpline_overseas_domains="apple.com,mzstatic.com"
+		[ -z "$(dbus get corpline_cn_direct)" ] && dbus set corpline_cn_direct=0
+		[ -z "$(dbus get corpline_sensitivity)" ] && dbus set corpline_sensitivity=normal
+		[ -z "$(dbus get corpline_notify)" ] && dbus set corpline_notify=off
+		dbus set corpline_inited=1
+	fi
 
 	dbus set corpline_version="$PLVER"
 	dbus set softcenter_module_${module}_version="$PLVER"
@@ -58,8 +66,9 @@ install_now() {
 	dbus set softcenter_module_${module}_description="$DESCR"
 
 	if [ "$(dbus get corpline_enable)" = "1" ]; then
+		# 在这里等它启动完（约几秒）：软件中心随后会删掉 /tmp 下的安装包，但守护程序与运行目录不在那里
 		echo_date "插件原本处于启用状态，按原设置重新启动…"
-		/bin/sh /koolshare/scripts/corpline_config.sh restart >/dev/null 2>&1 &
+		/bin/sh /koolshare/scripts/corpline_config.sh restart >/dev/null 2>&1
 	fi
 	echo_date "安装完成。在软件中心打开「$TITLE」填写公司账号后再启用。"
 }
