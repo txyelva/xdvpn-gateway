@@ -56,8 +56,9 @@
 .cl .cl-tg[aria-checked="true"]::after{transform:translateX(16px)}
 .cl .cl-tg:disabled{opacity:.45;cursor:not-allowed}
 .cl .cl-tg.busy{cursor:progress}
-.cl .cl-tg:focus,.cl .cl-btn:focus,.cl .cl-row-h:focus,.cl .cl-lnk:focus,.cl .cl-seg button:focus{outline:none}
-.cl .cl-tg:focus-visible,.cl .cl-btn:focus-visible,.cl .cl-row-h:focus-visible,.cl .cl-lnk:focus-visible,.cl .cl-seg button:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.cl .cl-tg:focus,.cl .cl-btn:focus,.cl .cl-row-h:focus,.cl .cl-lnk:focus,.cl .cl-seg button:focus{outline:2px solid var(--blue);outline-offset:2px}
+/* 鼠标点击不显示焦点框；不认识 :focus-visible 的旧浏览器（Safari 15.4 以前）会整条忽略这一规则，保留上面的焦点框 */
+.cl .cl-tg:focus:not(:focus-visible),.cl .cl-btn:focus:not(:focus-visible),.cl .cl-row-h:focus:not(:focus-visible),.cl .cl-lnk:focus:not(:focus-visible),.cl .cl-seg button:focus:not(:focus-visible){outline:none}
 
 /* 状态卡 */
 .cl .cl-card{background:var(--surface);border:1px solid var(--line);border-radius:8px}
@@ -108,6 +109,7 @@
 .cl .cl-tl .cl-dot{width:8px;height:8px;margin-top:6px}
 .cl .cl-tl .tx{font-size:13px;line-height:20px;color:var(--t1);min-width:0;overflow-wrap:anywhere}
 .cl .cl-tl .tx small{display:block;font-size:12px;line-height:18px;color:var(--t3);margin-top:2px}
+.cl .cl-tl li.empty{display:block;padding:14px 0;text-align:center}
 .cl .cl-tl li.empty .tx{color:var(--t3)}
 
 /* 运行日志 */
@@ -129,6 +131,9 @@
 .cl .cl-row-h .val{font-size:13px;line-height:20px;color:var(--t2);white-space:nowrap;max-width:300px;overflow:hidden;text-overflow:ellipsis}
 .cl .cl-chev{width:16px;height:16px;flex:none;color:var(--t3)}
 .cl .cl-row.static .cl-row-h{cursor:default}
+.cl .cl-row-h:disabled{cursor:default}
+.cl .cl-row-h:disabled:hover{background:none}
+.cl .cl-row-h:disabled .cl-chev{opacity:.35}
 .cl .cl-row.static .cl-row-h:hover{background:none}
 .cl .cl-row .cl-body{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--d-mid) var(--ease)}
 .cl .cl-row .cl-body > div{overflow:hidden;min-height:0}
@@ -183,7 +188,6 @@ var CL = (function () {
 	var ADMIN_IP = '<% login_ip_str(); %>';
 	if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ADMIN_IP)) ADMIN_IP = '';
 
-	var KEYS = ['enable', 'server', 'user', 'devices', 'overseas_domains', 'cn_direct', 'notify', 'notify_url', 'isp_dns', 'sensitivity', 'admin_ip'];
 	var DEFAULT_SERVER = 'vpn.xindong.com:8443';
 	var LOCK_NAME = '管理这台路由器的电脑';   // 后端自动加锁定设备时用的名字
 	var DEFAULT_DOMAINS = 'apple.com,mzstatic.com';
@@ -195,7 +199,10 @@ var CL = (function () {
 	var dbLoaded = false;
 	var st = null, stAt = 0;     // 最近一次状态 JSON 与取到的时间（浏览器毫秒）
 	var prevUpd = 0, updMovedAt = 0;
-	var pending = null;          // {kind:'start'|'retry', at}
+	var pending = null;          // {kind:'start'|'retry'|'resume', at, started}
+	var inflight = 0;            // 正在等回复的 /_api/ 请求数；期间所有会改设置的按钮都先停用
+	var net = { okAt: Date.now(), fails: 0 };   // 最近一次读到路由器的时间、之后连续失败的次数
+	var polling = false, pollSoon = 0, waitPoll = false;
 	var clients = null;          // {MAC:{name, ip, online}}，取不到为 null
 	var clientsFailed = false;
 	var shown = { key: null, act: null, desc: null, tl: null };
@@ -248,9 +255,11 @@ var CL = (function () {
 		try { var raw = window.atob ? window.atob(s) : Base64.decode(s); try { return decodeURIComponent(escape(raw)); } catch (e) { return raw; } }
 		catch (e2) { return ''; }
 	}
-	function srvNow() { return st && st.updated ? st.updated + (Date.now() - stAt) / 1000 : Date.now() / 1000; }
+	function srvNow() { return st && num(st.updated) ? num(st.updated) + (Date.now() - stAt) / 1000 : Date.now() / 1000; }
 	function host() { return (db.corpline_server || DEFAULT_SERVER).replace(/^https?:\/\//, '').replace(/[:\/].*$/, ''); }
 	function relaxed() { return db.corpline_sensitivity === 'relaxed'; }
+	// 状态文件里的数字都先转成数字再拼进页面
+	function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
 
 	function xhr(method, url, body, cb) {
 		var x = new XMLHttpRequest();
@@ -271,21 +280,25 @@ var CL = (function () {
 	/* ---------- 读写 dbus ---------- */
 	function loadDbus(cb) {
 		getJSON('/_api/corpline_', function (code, o) {
-			if (o && o.result && o.result[0]) { db = o.result[0]; dbLoaded = true; }
-			if (cb) cb(!!o);
+			var good = !!(o && o.result && o.result[0]);
+			if (good) { db = o.result[0]; dbLoaded = true; }
+			reach(good);
+			if (cb) cb(good);
 		});
 	}
-	function fieldsWith(over) {
-		var f = {}, i, k;
-		for (i = 0; i < KEYS.length; i++) { k = 'corpline_' + KEYS[i]; if (db[k] !== undefined) f[k] = String(db[k]); }
-		for (k in over) if (over.hasOwnProperty(k)) f[k] = over[k];
-		return f;
+	// 读路由器成功/失败（登录过期时会拿到登录页，不是 JSON，也算失败）
+	function reach(ok) {
+		if (ok) { net.okAt = Date.now(); net.fails = 0; } else net.fails++;
 	}
+	function unreachable() { return net.fails >= 2 && Date.now() - net.okAt > 10000; }
 	// action：1 应用（会重连）  4 只保存（不重连）  5 发测试通知  2 立即重试  3 重新启用  0 关闭
+	// 只提交这次改动的字段：软件中心只写收到的键，没提交的设置保持路由器上的值
 	function submit(action, over, cb) {
-		var id = Math.floor(Math.random() * 100000000);
-		var f = (action === 2 || action === 5) ? '' : fieldsWith(over || {});
+		var id = Math.floor(Math.random() * 100000000), f = '', k;
+		if (over) { f = {}; for (k in over) if (over.hasOwnProperty(k)) f[k] = String(over[k]); }
+		inflight++; renderBusy();
 		xhr('POST', '/_api/', JSON.stringify({ id: id, method: 'corpline_config.sh', params: [action], fields: f }), function (code, text) {
+			inflight = Math.max(0, inflight - 1);
 			var ok = false, res = null;
 			if (code >= 200 && code < 300) { try { res = String(JSON.parse(text).result); } catch (e) { res = null; } }
 			// 测试通知：成功回请求 id，没有地址回 nourl，发送失败回 fail
@@ -295,8 +308,19 @@ var CL = (function () {
 				if (f.corpline_password) db.corpline_has_password = '1';
 			}
 			if (cb) cb(ok, res === String(id) ? 'ok' : res);
-			if (ok && action !== 5) { setTimeout(function () { loadDbus(renderAll); }, 1500); fastUntil = Date.now() + 30000; clearTimeout(pollTimer); pollTimer = setTimeout(loop, 800); }
+			renderBusy();
+			if (ok && action !== 5) { setTimeout(function () { loadDbus(renderAll); }, 1500); fastUntil = Date.now() + 30000; pollIn(800); }
 		});
+	}
+	// 当前守护进程的启动时间；关闭时写的状态里没有 started
+	function curStarted() { return st && st.state !== 'off' && st.started ? st.started : 0; }
+	function startPending(was) { return { kind: 'start', at: Date.now(), started: was }; }
+	function renderBusy() {
+		var on = inflight > 0, ids = ['clSave-account', 'clSave-devices', 'clSave-domains', 'clSave-notify', 'clSave-adv', 'clCn', 'clNtTest'], i, el;
+		for (i = 0; i < ids.length; i++) { el = $i(ids[i]); if (el) el.disabled = on || (ids[i] === 'clCn' && !dbLoaded); }
+		el = $i('clActBtn');
+		if (el) el.disabled = on || el.getAttribute('data-busy') === '1';
+		renderHeader(viewKey());
 	}
 	function failText() { return '没有保存成功：路由器没有响应，请稍后再试。'; }
 
@@ -360,13 +384,16 @@ var CL = (function () {
 		return (Date.now() / 1000 - st.updated <= STALE_S) || (updMovedAt && Date.now() - updMovedAt <= STALE_S * 1000);
 	}
 	function viewKey() {
+		if (unreachable()) return 'noreach';
 		if (!dbLoaded) return 'loading';
 		if (db.corpline_paused === '1') return 'paused';
 		if (!trim(db.corpline_user) || db.corpline_has_password !== '1') return 'setup';
 		if (db.corpline_enable !== '1') return 'off';
 		var live = fresh() && st.state && st.state !== 'off';
+		// 会重启守护进程的操作：等到新进程（started 变了）写出状态才算启动完，最多等 45 秒
 		if (pending && pending.kind === 'start') {
-			if (live && (st.updated * 1000 >= pending.at - 2000 || pending.moves >= 2)) pending = null;
+			var restarted = st && st.started ? st.started !== pending.started : st && num(st.updated) * 1000 > pending.at + 2000;
+			if (live && restarted) pending = null;
 			else if (Date.now() - pending.at < 45000) return 'starting';
 			else pending = null;
 		}
@@ -385,7 +412,8 @@ var CL = (function () {
 		return metric('域名解析', '公司 DNS', d.queries ? '已处理 ' + thousands(d.queries) + ' 次查询' : '');
 	}
 	function spec(key) {
-		var now = srvNow(), r = st && st.retry || {}, since = st && st.since || 0, s;
+		var now = srvNow(), r = st && st.retry || {}, since = num(st && st.since), s;
+		var tries = num(r.attempts_today), cap = num(r.daily_cap) || 60, rtt = st && st.rtt_ms != null && st.rtt_ms !== '' && isFinite(Number(st.rtt_ms)) ? Math.round(Number(st.rtt_ms)) : null;
 		var direct = metric('当前线路', '运营商直连', '家里宽带');
 		switch (key) {
 		case 'loading':
@@ -395,18 +423,18 @@ var CL = (function () {
 			return { dot: 'ok', title: '正在使用公司专线', desc: s, m: [
 				metric('已稳定', since ? dur(now - since) : '—'),
 				metric('今日流量', trafficHtml()),
-				metric('延迟', st.rtt_ms != null ? st.rtt_ms + ' ms' : '—', '经公司 DNS 测得'),
+				metric('延迟', rtt != null ? rtt + ' ms' : '—', '经公司 DNS 测得'),
 				dnsMetric()] };
 		case 'watching':
 			return { dot: '', pulse: true, title: '公司线路有点慢，正在观察', desc: '仍在使用公司专线。如果持续不稳，会自动切到直连，不需要你处理。', m: [
-				metric('延迟', st.rtt_ms != null ? st.rtt_ms + ' ms' : '没有响应', '超过 ' + (relaxed() ? 1500 : 800) + ' ms 算偏慢'),
+				metric('延迟', rtt != null ? rtt + ' ms' : '没有响应', '超过 ' + (relaxed() ? 1500 : 800) + ' ms 算偏慢'),
 				metric('已观察', since ? dur(now - since) : '—', '超过 ' + (relaxed() ? 75 : 45) + ' 秒切到直连'),
 				metric('今日流量', trafficHtml()),
 				dnsMetric()] };
 		case 'fallback':
 			var reason = st.reason || '', hold = relaxed() ? '3 分钟' : '2 分钟', at = since ? hhmm(since) : '刚才';
 			var recovering = st.tunnel && st.tunnel.up && /恢复/.test(reason);
-			var capped = /上限/.test(reason) || (r.daily_cap && r.attempts_today >= r.daily_cap);
+			var capped = /上限/.test(reason) || (num(r.daily_cap) && tries >= cap);
 			if (recovering) s = '公司线路已经恢复，再稳定 ' + hold + '就自动切回。家里照常上网。';
 			else if (capped) s = '今天重连次数已到上限，先保持直连，明天自动再试；也可以点「立即重试」。家里照常上网。';
 			else s = (/断开/.test(reason) ? '公司线路在 ' + at + ' 断开了' : /连不上/.test(reason) ? '从 ' + at + ' 起暂时连不上公司线路' : '公司线路从 ' + at + ' 起没有响应') +
@@ -415,12 +443,12 @@ var CL = (function () {
 			if (recovering) next = metric('公司线路', '已恢复', '稳定 ' + hold + '后切回');
 			else if (r.connecting || pending && pending.kind === 'retry') next = metric('下次重试', '正在重连');
 			else if (capped) next = metric('下次重试', '明天', '今天的次数已用完');
-			else if (r.next_in > 0) next = metric('下次重试', countdown(r.next_in - (Date.now() - stAt) / 1000));
+			else if (num(r.next_in) > 0) next = metric('下次重试', countdown(num(r.next_in) - (Date.now() - stAt) / 1000));
 			else next = metric('下次重试', '马上');
 			return { dot: 'warn', title: '已临时切到直连', desc: s,
 				act: { cls: 'sec', label: pending && pending.kind === 'retry' ? '正在重试…' : '立即重试', busy: !!(pending && pending.kind === 'retry'), fn: retry },
 				m: [direct, metric('已持续', since ? dur(now - since) : '—'), next,
-					metric('今日重试', (r.attempts_today || 0) + ' / ' + (r.daily_cap || 60) + ' 次', '到上限后明天再试')] };
+					metric('今日重试', tries + ' / ' + cap + ' 次', '到上限后明天再试')] };
 		case 'autherr':
 			return { dot: 'err', title: '公司账号登录失败',
 				desc: '公司服务器拒绝了这个账号和密码，可能是密码改了。为了不让账号被锁，已停止自动重试；家里已切回直连，照常上网。',
@@ -430,7 +458,7 @@ var CL = (function () {
 		case 'starting':
 			return { dot: '', pulse: true, title: '正在连接公司线路…', desc: '连接成功、确认线路正常之前，家里保持直连。',
 				m: key === 'starting' ? [direct, metric('已用时', dur((Date.now() - pending.at) / 1000)), metric('服务器', esc(host()), '', true)] :
-					[direct, metric('已用时', since ? dur(now - since) : '—'), metric('尝试', '今天第 ' + Math.max(1, r.attempts_today || 1) + ' 次'), metric('服务器', esc(host()), '', true)] };
+					[direct, metric('已用时', since ? dur(now - since) : '—'), metric('尝试', '今天第 ' + Math.max(1, tries) + ' 次'), metric('服务器', esc(host()), '', true)] };
 		case 'paused':
 			var pr = trim(db.corpline_paused_reason).replace(/[，,]?\s*为安全起见先停用\s*$/, '').replace(/[。.]$/, '');
 			if (/^\d+ 分钟内意外退出/.test(pr)) pr = '连接程序 ' + pr.replace('意外退出', '意外退出了');
@@ -440,6 +468,9 @@ var CL = (function () {
 		case 'down':
 			return { dot: 'warn', title: '插件没有在运行', desc: '全家暂时直连上网。路由器每分钟会检查一次并自动拉起；如果一直是这样，可以先看运行日志，再点「重新启动」。',
 				act: { cls: 'sec', label: '重新启动', fn: restart }, m: [] };
+		case 'noreach':
+			return { dot: 'idle', title: '暂时读不到路由器状态',
+				desc: '页面暂时连不上路由器，可能是网络断了一下，或者后台登录已过期。线路本身不受影响，页面会自动重试；一直这样的话，刷新页面或重新登录路由器后台。', m: [] };
 		case 'setup':
 			return { dot: 'idle', title: '先填写公司账号', desc: '填好公司 VPN 的服务器、账号和密码并保存，就可以打开右上角的开关。',
 				act: { cls: 'pri', label: '填写账号', fn: function () { openRow('r-account', true); focusLater(trim($i('f-user').value) ? 'f-pw' : 'f-user'); } }, m: [] };
@@ -463,7 +494,7 @@ var CL = (function () {
 			var actSig = s.act ? s.act.cls + '|' + s.act.label + '|' + !!s.act.busy : '';
 			if (shown.act !== actSig) {
 				var box = $i('clStAct');
-				box.innerHTML = s.act ? '<button type="button" class="cl-btn ' + s.act.cls + '" id="clActBtn"' + (s.act.busy ? ' disabled' : '') + '>' + esc(s.act.label) + '</button>' : '';
+				box.innerHTML = s.act ? '<button type="button" class="cl-btn ' + s.act.cls + '" id="clActBtn" data-busy="' + (s.act.busy ? 1 : 0) + '"' + (s.act.busy || inflight ? ' disabled' : '') + '>' + esc(s.act.label) + '</button>' : '';
 				if (s.act) $i('clActBtn').onclick = s.act.fn;
 				shown.act = actSig;
 			}
@@ -485,30 +516,32 @@ var CL = (function () {
 	}
 	function renderHeader(key) {
 		var m = $i('clMaster'), lab = $i('clSwLabel');
-		var on = key !== 'setup' && key !== 'off' && key !== 'paused' && key !== 'loading';
+		if (m.className.indexOf('busy') >= 0) { m.disabled = true; return; }
+		// 自动停用时开关仍是开着的（用户本来开着），点它就是关掉插件；恢复用状态卡里的「重新启用」
+		var on = key === 'noreach' ? db.corpline_enable === '1' : key !== 'setup' && key !== 'off' && key !== 'loading';
 		m.setAttribute('aria-checked', on ? 'true' : 'false');
-		m.disabled = key === 'setup' || key === 'loading' || m.className.indexOf('busy') >= 0;
-		lab.textContent = key === 'setup' ? '未设置' : key === 'paused' ? '已停用' : key === 'loading' ? '' : on ? '已开启' : '已关闭';
+		m.disabled = key === 'setup' || key === 'loading' || key === 'noreach' || inflight > 0;
+		lab.textContent = key === 'setup' ? '未设置' : key === 'paused' ? '已自动停用' : key === 'loading' || key === 'noreach' ? '' : on ? '已开启' : '已关闭';
 	}
 	function renderFoot(key) {
 		var ver = (st && st.version) || db.corpline_version || '';
-		var running = fresh() && st.state && st.state !== 'off' && st.res && key !== 'off' && key !== 'paused' && key !== 'setup';
+		var running = fresh() && st.state && st.state !== 'off' && st.res && key !== 'off' && key !== 'paused' && key !== 'setup' && key !== 'noreach';
 		var t = (ver ? '版本 ' + ver + ' · ' : '');
-		if (running) t += '内存 ' + ((Number(st.res.mem_kb || 0) + Number(st.res.oc_mem_kb || 0)) / 1024).toFixed(1) + ' MB · CPU ' + (st.res.cpu_pct || '0') + '%';
-		else t += '未运行';
+		if (running) t += '内存 ' + ((num(st.res.mem_kb) + num(st.res.oc_mem_kb)) / 1024).toFixed(1) + ' MB · CPU ' + num(st.res.cpu_pct) + '%';
+		else t += key === 'noreach' ? '运行情况未知' : '未运行';
 		if (shown.foot !== t) { $i('clFoot').textContent = t; shown.foot = t; }
 	}
 	function renderTimeline() {
 		var ev = (st && st.events) || [], h = '', i, e, wide = false, n = Math.min(ev.length, TL_MAX), lv;
-		for (i = 0; i < n; i++) if (isOld(ev[i].t)) wide = true;
+		for (i = 0; i < n; i++) if (isOld(num(ev[i].t))) wide = true;
 		for (i = 0; i < n; i++) {
 			e = ev[i];
 			lv = e.l === 'ok' ? 'ok' : e.l === 'warn' ? 'warn' : e.l === 'err' ? 'err' : '';
 			var parts = String(e.m || '').split('\n');
-			h += '<li><span class="tm cl-num">' + whenLabel(e.t) + '</span><span class="cl-dot ' + lv + '"></span><span class="tx">' + esc(parts[0]) +
+			h += '<li><span class="tm cl-num">' + whenLabel(num(e.t)) + '</span><span class="cl-dot ' + lv + '"></span><span class="tx">' + esc(parts[0]) +
 				(parts[1] ? '<small>' + esc(parts.slice(1).join(' ')) + '</small>' : '') + '</span></li>';
 		}
-		if (!h) h = '<li class="empty"><span></span><span></span><span class="tx">还没有记录。开始使用后，线路切换和异常都会记在这里。</span></li>';
+		if (!h) h = '<li class="empty"><span class="tx">' + (!st && unreachable() ? '暂时读不到记录，连上路由器后会自动显示。' : '还没有记录。开始使用后，线路切换和异常都会记在这里。') + '</span></li>';
 		h = (wide ? 'w' : 'n') + h;
 		if (shown.tl === h) return;
 		shown.tl = h;
@@ -533,6 +566,7 @@ var CL = (function () {
 	}
 	function devList() { return edit.devices || parseDevices(db.corpline_devices); }
 	function renderDevices() {
+		if (!dbLoaded) { renderLock(false); return; }
 		var list = devList(), h = '', i, d, c, locked = null, count = 0;
 		for (i = 0; i < list.length; i++) if (list[i].locked) locked = list[i];
 		// 还没开启过：用登录这台后台的电脑占位，开启时自动加入
@@ -653,6 +687,7 @@ var CL = (function () {
 	function ntMsg(text, isErr) { var el = $i('clNtTestMsg'); el.textContent = text || ''; el.className = 'cl-msg' + (isErr ? ' err' : ''); }
 	function testNotify() {
 		var b = $i('clNtTest'), mode = notifyCur().mode;
+		if (inflight) return;
 		function send() {
 			b.disabled = true; b.textContent = '正在发送…'; ntMsg('');
 			submit(5, null, function (ok, res) {
@@ -718,7 +753,27 @@ var CL = (function () {
 		if (text) setTimeout(function () { if (f.textContent === text) flash(''); }, 6000);
 	}
 
-	function renderSettings() { renderAccount(); renderDevices(); renderDomains(); renderNotify(); renderAdv(); renderToggles(); }
+	function renderSettings() {
+		if (!dbLoaded) { renderLock(true); return; }
+		renderLock(false);
+		renderAccount(); renderDevices(); renderDomains(); renderNotify(); renderAdv(); renderToggles();
+	}
+	// 还没成功读到过设置：值一律显示「—」（不是「未填写」），设置行和国内直连开关先锁住，免得用空快照保存
+	var locked = null;
+	function renderLock(close) {
+		var on = !dbLoaded, rows = ['r-account', 'r-devices', 'r-global', 'r-notify', 'r-adv'], vals = ['clAcctVal', 'clDevVal', 'clDomVal', 'clNtVal', 'clAdvVal'], i;
+		if (on) for (i = 0; i < vals.length; i++) setVal(vals[i], '—');
+		else setVal('clAdvVal', '备用 DNS、判定灵敏度');
+		if (locked === on && !(on && close)) return;
+		locked = on;
+		for (i = 0; i < rows.length; i++) {
+			if (on && close && $i(rows[i]).className.indexOf(' open') >= 0) openRow(rows[i], false);
+			$i(rows[i]).getElementsByClassName('cl-row-h')[0].disabled = on;
+		}
+		var cn = $i('clCn');
+		cn.disabled = on || inflight > 0;
+		if (on) cn.setAttribute('aria-checked', 'false');
+	}
 	function renderAll() { renderStatus(); renderTimeline(); renderSettings(); }
 
 	/* ---------- 动作 ---------- */
@@ -733,23 +788,25 @@ var CL = (function () {
 		return over;
 	}
 	function onMaster() {
-		var m = $i('clMaster'), key = viewKey();
-		if (m.disabled) return;
-		if (key === 'paused') { resume(); return; }
-		var turnOn = m.getAttribute('aria-checked') !== 'true';
-		var over = { corpline_enable: turnOn ? '1' : '0' };
+		var m = $i('clMaster'), key = viewKey(), was = curStarted();
+		if (m.disabled || inflight) return;
+		// 自动停用中点开关 = 关掉插件（同时清掉停用标记）；[0] 只关闭，不会再拉起
+		var paused = key === 'paused';
+		var turnOn = !paused && m.getAttribute('aria-checked') !== 'true';
+		var over = paused ? { corpline_enable: '0', corpline_paused: '0' } : { corpline_enable: turnOn ? '1' : '0' };
 		if (turnOn) lockedDeviceFields(over);
 		m.className = 'cl-tg busy'; m.disabled = true;
 		m.setAttribute('aria-checked', turnOn ? 'true' : 'false');
 		$i('clSwLabel').textContent = turnOn ? '正在开启' : '正在关闭';
-		submit(1, over, function (ok) {
+		submit(paused ? 0 : 1, over, function (ok) {
 			m.className = 'cl-tg';
-			if (ok) { flash(''); if (turnOn) pending = { kind: 'start', at: Date.now() }; else pending = null; }
+			if (ok) { flash(''); pending = turnOn ? startPending(was) : null; }
 			else flash(turnOn ? '没有开启成功：路由器没有响应，请稍后再试。' : '没有关闭成功：路由器没有响应，请稍后再试。');
 			renderAll();
 		});
 	}
 	function retry() {
+		if (inflight) return;
 		pending = { kind: 'retry', at: Date.now() };
 		shown.act = null; renderStatus();
 		submit(2, null, function (ok) {
@@ -759,22 +816,27 @@ var CL = (function () {
 		});
 	}
 	function resume() {
+		if (inflight) return;
+		var was = curStarted();
 		pending = { kind: 'resume', at: Date.now() };
 		shown.act = null; renderStatus();
 		submit(3, lockedDeviceFields({ corpline_enable: '1' }), function (ok) {
-			if (ok) { db.corpline_paused = '0'; pending = { kind: 'start', at: Date.now() }; flash(''); }
+			if (ok) { db.corpline_paused = '0'; pending = startPending(was); flash(''); }
 			else { pending = null; flash('没有启用成功：路由器没有响应，请稍后再试。'); }
 			renderAll();
 		});
 	}
 	function restart() {
+		if (inflight) return;
+		var was = curStarted();
 		submit(1, lockedDeviceFields({ corpline_enable: '1' }), function (ok) {
-			if (ok) { pending = { kind: 'start', at: Date.now() }; flash(''); } else flash('没有启动成功：路由器没有响应，请稍后再试。');
+			if (ok) { pending = startPending(was); flash(''); } else flash('没有启动成功：路由器没有响应，请稍后再试。');
 			renderAll();
 		});
 	}
 	function saveRow(which, then) {
-		var over = {}, after;
+		if (inflight || !dbLoaded) return;
+		var over = {}, after, was = curStarted();
 		if (which === 'account') {
 			var srv = trim($i('f-srv').value), user = trim($i('f-user').value), pw = $i('f-pw').value;
 			if (!srv) { bad('f-srv', 'account', '请填写服务器地址。'); return; }
@@ -793,7 +855,8 @@ var CL = (function () {
 		} else if (which === 'notify') {
 			var n = notifyCur(); n.url = trim($i('f-hook').value);
 			if (n.mode !== 'off' && !/^https?:\/\/\S+$/.test(n.url)) { bad('f-hook', 'notify', '请粘贴完整的推送地址（以 https:// 开头）。'); return; }
-			over.corpline_notify = n.mode; over.corpline_notify_url = n.mode === 'off' ? (db.corpline_notify_url || '') : n.url;
+			// 关掉通知时只改方式，保留已存的推送地址
+			over.corpline_notify = n.mode; if (n.mode !== 'off') over.corpline_notify_url = n.url;
 			after = function () { edit.notify = null; };
 		} else if (which === 'adv') {
 			var a = advCur(), sel = $i('f-dns').value, dns = sel === 'custom' ? trim($i('f-dns-c').value).replace(/[\s，]+/g, ',').replace(/^,|,$/g, '') : sel;
@@ -814,7 +877,7 @@ var CL = (function () {
 			msg(which, '');
 			clearBad();
 			after();
-			if (action === 1 && db.corpline_enable === '1' && db.corpline_paused !== '1') pending = { kind: 'start', at: Date.now() };
+			if (action === 1 && db.corpline_enable === '1' && db.corpline_paused !== '1') pending = startPending(was);
 			renderAll();
 			if (then) then();
 		});
@@ -827,13 +890,14 @@ var CL = (function () {
 		renderSettings();
 	}
 	function onCn() {
-		var t = $i('clCn'), want = t.getAttribute('aria-checked') !== 'true';
+		var t = $i('clCn'), want = t.getAttribute('aria-checked') !== 'true', was = curStarted();
+		if (t.disabled || inflight || !dbLoaded) return;
 		t.setAttribute('aria-checked', want ? 'true' : 'false');
 		t.className = 'cl-tg busy'; t.disabled = true;
 		submit(1, { corpline_cn_direct: want ? '1' : '0' }, function (ok) {
 			t.className = 'cl-tg'; t.disabled = false;
 			if (!ok) { t.setAttribute('aria-checked', want ? 'false' : 'true'); flash(failText()); }
-			else if (db.corpline_enable === '1' && db.corpline_paused !== '1') pending = { kind: 'start', at: Date.now() };
+			else if (db.corpline_enable === '1' && db.corpline_paused !== '1') pending = startPending(was);
 			renderAll();
 		});
 	}
@@ -878,21 +942,49 @@ var CL = (function () {
 	}
 
 	/* ---------- 轮询 ---------- */
-	function poll() {
+	function poll(done) {
 		getJSON('/_temp/corpline_status.json', function (code, o) {
-			if (o && typeof o === 'object') {
-				if (prevUpd && o.updated && o.updated !== prevUpd) { updMovedAt = Date.now(); if (pending) pending.moves = (pending.moves || 0) + 1; }
-				prevUpd = o.updated || 0;
-				st = o; stAt = Date.now();
-				if (pending && pending.kind === 'retry' && (o.retry && o.retry.connecting || o.state !== 'fallback')) pending = null;
-			} else if (code === 404) { st = null; }
+			if (o && typeof o === 'object' && (o.state || o.v)) {
+				reach(true);
+				// 比手上这份还旧的回复不要（同一个进程的 updated 只会往前走）
+				var older = st && num(o.updated) < num(st.updated) && o.started === st.started;
+				if (!older) {
+					if (prevUpd && o.updated && o.updated !== prevUpd) updMovedAt = Date.now();
+					prevUpd = o.updated || 0;
+					st = o; stAt = Date.now();
+					if (pending && pending.kind === 'retry' && (o.retry && o.retry.connecting || o.state !== 'fallback')) pending = null;
+				}
+			} else if (code === 404) { reach(true); st = null; }   // 路由器在，只是还没有状态文件
+			else reach(false);
+			waitPoll = false;
 			renderStatus(); renderTimeline();
+			done();
 		});
 		polls++;
-		if (polls % 3 === 0) loadDbus(function () { renderStatus(); renderSettings(); });
+		if (polls % 3 === 0 || !dbLoaded) loadDbus(function () { renderStatus(); renderSettings(); });
 	}
-	// 平时每 5 秒读一次；刚操作过的 30 秒内每 1.5 秒读一次，让状态变化跟得上
-	function loop() { clearTimeout(pollTimer); poll(); pollTimer = setTimeout(loop, Date.now() < fastUntil ? 1500 : POLL_MS); }
+	// 同一时间只有一个读取在路上，读完再排下一次：平时每 5 秒；刚操作过的 30 秒内每 1.5 秒，让状态变化跟得上
+	function loop() {
+		clearTimeout(pollTimer); pollTimer = null;
+		if (polling || document.hidden) return;
+		polling = true;
+		poll(function () {
+			polling = false;
+			var ms = pollSoon || (Date.now() < fastUntil ? 1500 : POLL_MS);
+			pollSoon = 0;
+			pollIn(ms);
+		});
+	}
+	function pollIn(ms) {
+		if (polling) { pollSoon = pollSoon ? Math.min(pollSoon, ms) : ms; return; }
+		clearTimeout(pollTimer); pollTimer = null;
+		if (!document.hidden) pollTimer = setTimeout(loop, ms);
+	}
+	// 页面在后台时不读；切回来马上读一次，读到之前先不刷新状态卡，免得闪一下「没有在运行」
+	function onVisible() {
+		if (document.hidden) { clearTimeout(pollTimer); pollTimer = null; return; }
+		if (!polling) { waitPoll = true; loop(); }
+	}
 
 	/* ---------- 绑定 ---------- */
 	function bind() {
@@ -933,10 +1025,11 @@ var CL = (function () {
 
 	function start() {
 		bind();
-		renderStatus(); renderTimeline();
+		renderStatus(); renderTimeline(); renderLock(false);
 		loadDbus(function () { renderAll(); loop(); });
 		loadClients();
-		setInterval(function () { if (st || pending) renderStatus(); }, 1000);
+		if (document.addEventListener) document.addEventListener('visibilitychange', onVisible, false);
+		setInterval(function () { if (!document.hidden && !waitPoll && (st || pending || net.fails)) renderStatus(); }, 1000);
 	}
 
 	return { start: start, openRow: openRow };
@@ -1041,7 +1134,7 @@ function menu_hook() {
     </div>
 
     <div class="cl-row" id="r-adv">
-      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>高级</b></span><span class="val">备用 DNS、判定灵敏度</span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>高级</b></span><span class="val" id="clAdvVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
       <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in">
         <div class="cl-fg">
           <label for="f-dns">备用 DNS</label><select class="cl-in" id="f-dns"><option value="">运营商 DNS（自动）</option><option value="223.5.5.5,223.6.6.6">阿里 223.5.5.5</option><option value="119.29.29.29,119.28.28.28">腾讯 119.29.29.29</option><option value="custom">自定义…</option></select>

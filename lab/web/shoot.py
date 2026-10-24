@@ -19,10 +19,12 @@ EXTRA = {
     "setup-open": "s=setup&open=r-account,r-devices",
     "active-noclients": "s=active&noclients=1&open=r-devices",
 }
+# 需要页面多跑一会儿才出现的状态：(参数, 虚拟时间毫秒)
+SLOW = {"noreach": ("s=active&net=down", 16000)}
 
-def shot(url, path, h=1700):
+def shot(url, path, h=1700, budget=4000):
     subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2", "--force-prefers-reduced-motion",
-                    "--window-size=1040,%d" % h, "--virtual-time-budget=4000",
+                    "--window-size=1040,%d" % h, "--virtual-time-budget=%d" % budget,
                     "--user-data-dir=/private/tmp/claude-501/chrome-corpline", "--screenshot=" + path, url],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     crop(path)
@@ -44,6 +46,8 @@ for s in STATES:
     shot(BASE + "?s=" + s, os.path.join(OUT, s + ".png"))
 for k, q in EXTRA.items():
     shot(BASE + "?" + q, os.path.join(OUT, k + ".png"), 2600)
+for k, (q, ms) in SLOW.items():
+    shot(BASE + "?" + q, os.path.join(OUT, k + ".png"), 1700, ms)
 if "--proto" in sys.argv:
     for s in STATES[:-1]:
         shot(PROTO + "?s=" + s, os.path.join(OUT, "proto", s + ".png"))

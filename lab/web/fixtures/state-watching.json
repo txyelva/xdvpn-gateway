@@ -3,6 +3,7 @@
  "status": {
   "v": 1,
   "version": "0.1.0",
+  "started": -40000,
   "state": "watching",
   "since": -30,
   "reason": "延迟 860 ms，偏慢",

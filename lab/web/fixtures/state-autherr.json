@@ -3,6 +3,7 @@
  "status": {
   "v": 1,
   "version": "0.1.0",
+  "started": -17000,
   "state": "autherr",
   "since": -16200,
   "reason": "账号或密码不对",
