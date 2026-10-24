@@ -4,8 +4,7 @@ cd "$(dirname "$0")"
 . ./lib.sh
 LIST=${1:-.state/china.conf}
 [ -f "$LIST" ] || { echo "缺少名单文件 $LIST"; exit 1; }
-rm -rf /tmp/ks && mkdir -p /tmp/ks && tar -C /tmp/ks -xzf ../corpline.tar.gz
-rt busybox sh /tmp/ks/corpline/install.sh >/dev/null 2>&1
+ks_install >/dev/null 2>&1
 mkdir -p /koolshare/configs/corpline
 printf 'cafile=%s\noc_ld_library_path=\nisp_dns_file=%s\n' $S/pki/ca.pem $S/resolv.dnsmasq >/koolshare/configs/corpline/lab.conf
 cp "$LIST" /koolshare/configs/corpline/china-domains.conf

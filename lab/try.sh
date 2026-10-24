@@ -3,8 +3,7 @@
 cd "$(dirname "$0")"; . ./lib.sh
 mkdir -p $S/snap
 snapshot >$S/snap/s0.txt
-rm -rf /tmp/ks; mkdir -p /tmp/ks; tar -C /tmp/ks -xzf ../corpline.tar.gz
-rt busybox sh /tmp/ks/corpline/install.sh
+ks_install
 snapshot >$S/snap/s1.txt
 mkdir -p /koolshare/configs/corpline
 cat >/koolshare/configs/corpline/lab.conf <<EOC

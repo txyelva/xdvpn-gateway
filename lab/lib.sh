@@ -53,6 +53,28 @@ snapshot() { # 网络与文件状态快照（用于"零残留"对比）
 		echo "## processes"; pgrep -a "corpline|openconnect" | sed 's/^[0-9]* //' || true
 		echo "## cron"; cat $S/cron 2>/dev/null
 		echo "## koolshare"; find /koolshare -type f -o -type l | sort
-		echo "## tmp"; ls /tmp/upload/ 2>/dev/null | grep -i corpline; ls -d /tmp/corpline* 2>/dev/null
+		echo "## tmp"; ls /tmp/upload/ 2>/dev/null | grep -i corpline; ls -d /tmp/corpline* /var/run/corpline* /var/lock/corpline* 2>/dev/null
 	} 2>&1
+}
+
+# 模拟软件中心离线安装：包解到 /tmp/corpline，跑 install.sh，装完 rm -rf /tmp/corpline*
+ks_install() {
+	rm -rf /tmp/corpline /tmp/corpline.tar.gz
+	cp ../corpline.tar.gz /tmp/corpline.tar.gz
+	tar -C /tmp -xzf /tmp/corpline.tar.gz
+	rt busybox sh /tmp/corpline/install.sh
+	local rc=$?
+	rm -rf /tmp/corpline*
+	return $rc
+}
+# 模拟断电重启：外壳与守护程序都来不及收尾，内存里的状态全部丢失，只剩 /jffs 与 dbus
+reboot_sim() {
+	pkill -9 -f "^/bin/sh -c /koolshare/bin/corpline run" 2>/dev/null
+	pkill -9 -x corpline 2>/dev/null
+	pkill -9 -x openconnect 2>/dev/null
+	sleep 0.5
+	local keep=$([ -f /jffs/configs/dnsmasq.d/corpline.conf ] && echo 1)
+	rt /koolshare/bin/corpline cleanup -c /dev/null >/dev/null 2>&1   # 内核里的规则随重启消失
+	[ -n "$keep" ] && printf 'server=127.0.0.1#5354\nstrict-order\n' >/jffs/configs/dnsmasq.d/corpline.conf
+	rm -rf /var/run/corpline /var/lock/corpline.lock /tmp/upload/corpline_status.json
 }

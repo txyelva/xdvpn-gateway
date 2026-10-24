@@ -31,16 +31,16 @@ fresh_active() { # 回到干净的"公司专线正常"状态
 	rt ip route replace default via 100.64.0.1
 	[ -z "$(cl_pid)" ] && api 1
 	if [ "$(state)" != active ]; then
-		rt /bin/sh -c 'kill -USR1 $(cat /tmp/corpline/corpline.pid)' 2>/dev/null
+		rt /bin/sh -c 'kill -USR1 $(cat /var/run/corpline/corpline.pid)' 2>/dev/null
 		wait_state active 240 >/dev/null
 	fi
 }
 
 scenario_install() {
 	CASE="安装（未启用）"
+	rm -f $ST   # 上一轮留下的状态文件会让"等到公司专线可用"立刻返回
 	snapshot >$S/s0.txt
-	rm -rf /tmp/ks && mkdir -p /tmp/ks && tar -C /tmp/ks -xzf ../corpline.tar.gz
-	rt busybox sh /tmp/ks/corpline/install.sh >$S/install.log 2>&1
+	ks_install >$S/install.log 2>&1
 	snapshot >$S/s1.txt
 	local d=$(diff <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s0.txt) <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s1.txt) | grep -c '^[<>]')
 	check "安装后网络改动条数" "$d" 0
@@ -194,7 +194,7 @@ scenario_server_down() {
 	check "期间 DNS" "$(which_dns)" isp
 	corp iptables -D INPUT -p tcp --dport 8443 -j DROP
 	corp iptables -D INPUT -p udp --dport 8443 -j DROP
-	rt /bin/sh -c 'kill -USR1 $(cat /tmp/corpline/corpline.pid)'
+	rt /bin/sh -c 'kill -USR1 $(cat /var/run/corpline/corpline.pid)'
 	local t=$(wait_state active 200)
 	ok "服务器恢复 + 点「立即重试」后回到公司专线：${t} 秒"
 }
@@ -202,7 +202,7 @@ scenario_server_down() {
 scenario_crash() {
 	CASE="插件守护程序崩溃"
 	fresh_active
-	rm -f /tmp/corpline/restarts
+	rm -f /var/run/corpline/restarts
 	touch $S/crond.paused   # 不靠每分钟的定时看护，验证崩溃后自己就能恢复
 	local op=$(oc_pid)
 	kill -9 $(cl_pid)
@@ -221,7 +221,7 @@ scenario_crash() {
 scenario_crash_loop() {
 	CASE="反复崩溃 → 自动停用"
 	fresh_active
-	rm -f /tmp/corpline/restarts
+	rm -f /var/run/corpline/restarts
 	touch $S/crond.paused
 	local i=0
 	while [ $i -lt 5 ] && [ "$(/koolshare/bin/dbus get corpline_paused)" != 1 ]; do
@@ -268,7 +268,7 @@ scenario_notify() {
 	dbset corpline_notify=feishu
 	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/ok
 	: >$S/hook.log
-	rm -f /tmp/corpline/restarts
+	rm -f /var/run/corpline/restarts
 	touch $S/crond.paused
 	local i=0
 	while [ $i -lt 5 ] && [ "$(/koolshare/bin/dbus get corpline_paused)" != 1 ]; do
@@ -288,15 +288,9 @@ scenario_notify() {
 scenario_power_loss() {
 	CASE="运行中突然断电"
 	fresh_active
-	# 断电：外壳和守护程序都来不及收尾（先杀外壳，免得它替我们清理）
-	pkill -9 -f "^/bin/sh -c /koolshare/bin/corpline run"
-	kill -9 $(cl_pid)
-	sleep 1
-	# 重启后内存里的东西都没了，只剩 /jffs 与 dbus 里的设置
-	rt /koolshare/bin/corpline cleanup -c /dev/null >/dev/null 2>&1
-	printf 'server=127.0.0.1#5354\nstrict-order\n' >/jffs/configs/dnsmasq.d/corpline.conf
+	# 断电：外壳和守护程序都来不及收尾；重启后内存里的东西都没了，只剩 /jffs 与 dbus 里的设置
+	reboot_sim
 	rt /bin/sh -c 'kill $(cat /var/run/dnsmasq.pid)'; sleep 0.5; rt dnsmasq -C $S/dnsmasq-rt.conf; sleep 0.5
-	rm -rf /tmp/corpline /tmp/upload/corpline_status.json
 	dbset corpline_paused=1   # 最坏情况：断电前插件已处于自动停用（或 openconnect 所在 U 盘没挂上）
 	rt /bin/sh /koolshare/init.d/S96corpline.sh start
 	check "开机后残留的 DNS 转发配置" "$(ls /jffs/configs/dnsmasq.d/ | grep -c corpline)" 0
@@ -341,6 +335,16 @@ scenario_fw_rebuild() {
 	local n=0
 	while [ $n -lt 70 ] && ! rt iptables -t mangle -C PREROUTING -i br0 -j CORPLINE 2>/dev/null; do sleep 1; n=$((n + 1)); done
 	if [ $n -lt 70 ]; then ok "即使没有钩子，守护程序 ${n} 秒内自行补回"; else bad "规则没有被补回"; fi
+	# 只丢了路由规则、只重建了 filter 表、rp_filter 被改回：也要发现并补回
+	rt ip rule del pref 8850
+	rt iptables -D FORWARD -j CORPLINE_GUARD
+	rt sh -c 'echo 1 >/proc/sys/net/ipv4/conf/all/rp_filter'
+	check "路由规则丢失后新连接线路（落回直连）" "$(path lan1 100.64.2.80)" direct
+	n=0
+	while [ $n -lt 70 ] && ! { rt ip rule | grep -q '^8850:' && rt iptables -C FORWARD -j CORPLINE_GUARD 2>/dev/null && [ "$(rt cat /proc/sys/net/ipv4/conf/all/rp_filter)" = 0 ]; }; do sleep 1; n=$((n + 1)); done
+	if [ $n -lt 70 ]; then ok "路由规则、filter 防护、rp_filter ${n} 秒内全部补回"; else bad "路由规则/防护/rp_filter 没有全部补回"; fi
+	check "补回后线路" "$(path lan1 100.64.2.80)" tunnel
+	check "补回后 mangle 规则顺序（不重复）" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -c -- '-A')" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -- '-A' | sort -u | wc -l)"
 }
 
 scenario_cn_direct() {
@@ -389,10 +393,11 @@ scenario_bootloop() {
 	CASE="开机即坏保护"
 	fresh_active
 	dbset corpline_boots=0
-	rt /bin/sh /koolshare/init.d/S96corpline.sh start
-	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	reboot_sim; rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	reboot_sim; rt /bin/sh /koolshare/init.d/S96corpline.sh start
 	check "两次开机后仍在运行" "$(pgrep -c -x corpline)" 1
-	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	check "开机计数" "$(/koolshare/bin/dbus get corpline_boots)" 2
+	reboot_sim; rt /bin/sh /koolshare/init.d/S96corpline.sh start
 	check "第三次开机（未稳定运行过）自动停用" "$(/koolshare/bin/dbus get corpline_paused)" 1
 	check "停用后网络规则" "$(rt iptables-save | grep -ci corpline)" 0
 	api 3
@@ -417,7 +422,87 @@ scenario_disable_uninstall() {
 	check "卸载后 dbus 设置" "$(/koolshare/bin/dbus list corpline_ | wc -l)" 0
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct resources bootloop disable_uninstall"
+scenario_wan_repeat() {
+	CASE="运行中宽带重拨（S96 重复调用）"
+	fresh_active
+	local r0=$(rt iptables-save | grep -c CORPLINE) b0=$(/koolshare/bin/dbus get corpline_boots)
+	# 最容易出错的情况：从网页启用后还没经历过开机，第一次宽带重拨
+	rm -f /var/run/corpline/booted
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	check "重拨后守护程序个数" "$(pgrep -c -x corpline)" 1
+	check "重拨后规则条数不变" "$(rt iptables-save | grep -c CORPLINE)" "$r0"
+	check "重拨不算开机（开机计数）" "$(/koolshare/bin/dbus get corpline_boots)" "$b0"
+	check "总阀门仍打开" "$(rt ipset list corpline_live | grep -c '/1')" 2
+	check "设备线路" "$(path lan1 100.64.2.80)" tunnel
+	check "状态" "$(state)" active
+}
+
+scenario_upgrade() {
+	CASE="启用中升级（覆盖安装同一包）"
+	fresh_active
+	local p0=$(cl_pid)
+	ks_install >$S/upgrade.log 2>&1
+	check "升级脚本退出码" "$?" 0
+	local t=$(wait_state active 90)
+	ok "升级后回到公司专线：${t} 秒"
+	check "守护程序个数" "$(pgrep -c -x corpline)" 1
+	check "openconnect 个数" "$(pgrep -c -x openconnect)" 1
+	[ "$(cl_pid)" != "$p0" ] && ok "运行的是新装的程序（pid $p0 → $(cl_pid)）" || bad "守护程序没有重启"
+	check "运行目录未被安装器删掉" "$(ls /var/run/corpline/corpline.pid 2>/dev/null)" /var/run/corpline/corpline.pid
+	check "升级后设备线路" "$(path lan1 100.64.2.80)" tunnel
+	check "升级不覆盖已有设置（海外域名）" "$(/koolshare/bin/dbus get corpline_overseas_domains)" "apple.com,mzstatic.com"
+	dbset corpline_enable=0
+	api 1
+	sleep 2
+	check "升级后关闭：进程" "$(pgrep -c -x 'corpline|openconnect')" 0
+	check "升级后关闭：网络规则" "$(rt iptables-save | grep -ci corpline)" 0
+	check "升级后关闭：设备线路" "$(path lan1 100.64.2.80)" direct
+	# 用户清空"走海外 DNS 的域名"后再升级，不会被填回默认
+	dbset corpline_overseas_domains=
+	ks_install >>$S/upgrade.log 2>&1
+	check "清空的设置升级后仍为空" "[$(/koolshare/bin/dbus get corpline_overseas_domains)]" "[]"
+	dbset corpline_overseas_domains=apple.com,mzstatic.com
+	dbset corpline_enable=1
+	api 1
+	wait_state active 60 >/dev/null
+}
+
+scenario_nasty() {
+	CASE="设置里有特殊字符"
+	fresh_active
+	rm -f /tmp/pwned*
+	dbset 'corpline_user=te"st$(touch /tmp/pwned1)`touch /tmp/pwned2`'"'"';touch /tmp/pwned3'
+	dbset 'corpline_server=vpn.corp.test:8443;touch /tmp/pwned4'
+	dbset 'corpline_overseas_domains=apple.com$(touch /tmp/pwned5)'
+	dbset corpline_password=$(printf '%s' 'p"$(touch /tmp/pwned6)' | base64 -w0)
+	api 1
+	sleep 8
+	dbset corpline_notify=bark
+	dbset 'corpline_notify_url=http://100.64.2.81:8080/bark/$(touch /tmp/pwned7)'
+	rt busybox sh /koolshare/scripts/corpline_config.sh 781 5 >/dev/null 2>&1
+	check "特殊字符没有被当成命令执行" "$(ls /tmp/pwned* 2>/dev/null | wc -l)" 0
+	check "账号按原样写入配置" "$(grep '^user=' /var/run/corpline/corpline.conf | cut -d= -f2-)" 'te"st$(touch /tmp/pwned1)`touch /tmp/pwned2`'"'"';touch /tmp/pwned3'
+	check "格式不对的服务器地址改用默认" "$(grep '^server=' /var/run/corpline/corpline.conf)" "server=vpn.xindong.com:8443"
+	check "密码按原样保存" "$(cat /koolshare/configs/corpline/passwd)" 'p"$(touch /tmp/pwned6)'
+	dbset corpline_enable=0
+	api 1
+	sleep 2
+	check "这时仍能正常关闭：进程" "$(pgrep -c -x 'corpline|openconnect')" 0
+	check "这时仍能正常关闭：网络规则" "$(rt iptables-save | grep -ci corpline)" 0
+	dbset corpline_user=tester
+	dbset corpline_server=vpn.corp.test:8443
+	dbset corpline_overseas_domains=apple.com,mzstatic.com
+	dbset corpline_password=$(printf s3cret | base64)
+	dbset corpline_notify=off
+	dbset corpline_notify_url=
+	dbset corpline_enable=1
+	api 1
+	local t=$(wait_state active 60)
+	ok "改回正常设置后恢复：${t} 秒"
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

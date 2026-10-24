@@ -12,8 +12,6 @@ set)
 remove) grep -v "^$2=" $DB >$DB.tmp || true; mv $DB.tmp $DB ;;
 list) grep "^$2" $DB || true ;;
 export)
-	grep "^$2" $DB | while IFS= read -r l; do
-		k=${l%%=*}; v=${l#*=}
-		printf "export %s='%s'\n" "$k" "$(printf '%s' "$v" | sed "s/'/'\\\\''/g")"
-	done ;;
+	# 真机 skipd 的格式：export k="v"，值原样输出、不转义（插件脚本已不再 eval 它）
+	grep "^$2" $DB | while IFS= read -r l; do printf 'export %s="%s"\n' "${l%%=*}" "${l#*=}"; done ;;
 esac
