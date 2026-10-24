@@ -1,0 +1,47 @@
+{
+ "dbus": {},
+ "status": {
+  "v": 1,
+  "version": "0.1.0",
+  "state": "connecting",
+  "since": -6,
+  "reason": "",
+  "live": false,
+  "line": "direct",
+  "tunnel": {
+   "up": false
+  },
+  "rtt_ms": null,
+  "traffic_today": {
+   "rx": 4213000000,
+   "tx": 310400000
+  },
+  "dns": {
+   "company": null,
+   "overseas": null,
+   "isp": true,
+   "queries": 0,
+   "mode": "isp"
+  },
+  "retry": {
+   "attempts_today": 1,
+   "daily_cap": 60,
+   "next_in": 0,
+   "connecting": true
+  },
+  "res": {
+   "mem_kb": 1800,
+   "oc_mem_kb": 5200,
+   "cpu_pct": "1.2"
+  },
+  "cn_direct": false,
+  "updated": 0,
+  "events": [
+   {
+    "t": -6,
+    "l": "info",
+    "m": "开始连接公司线路"
+   }
+  ]
+ }
+}

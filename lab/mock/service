@@ -1,0 +1,12 @@
+#!/bin/bash
+# service 模拟：只实现 restart_dnsmasq（按原参数在当前网络命名空间重启路由器 dnsmasq）
+case "$1" in
+restart_dnsmasq)
+	[ -f /var/run/dnsmasq.pid ] && kill $(cat /var/run/dnsmasq.pid) 2>/dev/null
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		[ -f /var/run/dnsmasq.pid ] && kill -0 $(cat /var/run/dnsmasq.pid) 2>/dev/null || break
+		sleep 0.2
+	done
+	echo "$(date +%T) restart_dnsmasq" >>/tmp/lab/service.log
+	dnsmasq -C /tmp/lab/dnsmasq-rt.conf ;;
+esac

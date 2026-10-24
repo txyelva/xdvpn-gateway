@@ -1,0 +1,67 @@
+{
+ "dbus": {},
+ "status": {
+  "v": 1,
+  "version": "0.1.0",
+  "state": "fallback",
+  "since": -540,
+  "reason": "公司线路无响应",
+  "live": false,
+  "line": "direct",
+  "tunnel": {
+   "up": false
+  },
+  "rtt_ms": null,
+  "traffic_today": {
+   "rx": 4213000000,
+   "tx": 310400000
+  },
+  "dns": {
+   "company": null,
+   "overseas": null,
+   "isp": true,
+   "queries": 12901,
+   "mode": "isp"
+  },
+  "retry": {
+   "attempts_today": 4,
+   "daily_cap": 60,
+   "next_in": 80,
+   "connecting": false
+  },
+  "res": {
+   "mem_kb": 2050,
+   "oc_mem_kb": 0,
+   "cpu_pct": "0.0"
+  },
+  "cn_direct": false,
+  "updated": 0,
+  "events": [
+   {
+    "t": -40,
+    "l": "info",
+    "m": "连接未成功（公司服务器没有响应），2 分钟后再试"
+   },
+   {
+    "t": -540,
+    "l": "warn",
+    "m": "公司线路连续 3 次无响应，已临时切到直连，后台继续尝试"
+   },
+   {
+    "t": -585,
+    "l": "info",
+    "m": "公司线路一次无响应，继续观察"
+   },
+   {
+    "t": -22800,
+    "l": "ok",
+    "m": "已连上公司专线，全家流量改走公司线路"
+   },
+   {
+    "t": -93600,
+    "l": "info",
+    "m": "防火墙被固件重建过，已恢复本插件规则"
+   }
+  ]
+ }
+}

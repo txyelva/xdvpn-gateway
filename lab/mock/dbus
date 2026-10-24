@@ -1,0 +1,19 @@
+#!/bin/bash
+# skipd dbus 模拟：键值存在 /tmp/lab/dbus.db（每行 key=value）
+DB=/tmp/lab/dbus.db
+touch $DB
+case "$1" in
+get) grep -m1 "^$2=" $DB | cut -d= -f2- ;;
+set)
+	k=${2%%=*}; v=${2#*=}
+	grep -v "^$k=" $DB >$DB.tmp || true
+	printf '%s=%s\n' "$k" "$v" >>$DB.tmp
+	mv $DB.tmp $DB ;;
+remove) grep -v "^$2=" $DB >$DB.tmp || true; mv $DB.tmp $DB ;;
+list) grep "^$2" $DB || true ;;
+export)
+	grep "^$2" $DB | while IFS= read -r l; do
+		k=${l%%=*}; v=${l#*=}
+		printf "export %s='%s'\n" "$k" "$(printf '%s' "$v" | sed "s/'/'\\\\''/g")"
+	done ;;
+esac

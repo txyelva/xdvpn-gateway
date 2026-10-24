@@ -1,0 +1,438 @@
+#!/bin/bash
+# 沙盒故障演练：从安装到卸载，逐项制造故障，检查插件是否按设计退避、回到直连、再自动恢复。
+# 用法：sudo bash lab/run.sh [场景名...]   不带参数 = 全部场景（约 40 分钟）
+# 结果：lab/report/RESULTS.md（每项 通过/失败 + 证据）
+cd "$(dirname "$0")"
+. ./lib.sh
+REPORT=$(pwd)/report
+mkdir -p $REPORT
+OUT=$REPORT/RESULTS.md
+PASS=0
+FAIL=0
+
+log() { echo "[$(date +%T)] $*"; }
+ok() { PASS=$((PASS + 1)); echo "| $CASE | ✅ | $* |" >>$OUT; log "✅ $CASE：$*"; }
+bad() { FAIL=$((FAIL + 1)); echo "| $CASE | ❌ | $* |" >>$OUT; log "❌ $CASE：$*"; }
+check() { # check <描述> <实际> <期望>
+	if [ "$2" = "$3" ]; then ok "$1：$2"; else bad "$1：实际 $2，期望 $3"; fi
+}
+timeline_has() { jq -r '.events[].m' $ST 2>/dev/null | grep -q "$1"; }
+oc_pid() { pgrep -x openconnect | head -n1; }
+cl_pid() { pgrep -x corpline | head -n1; }
+oc_starts() { grep -c "连接公司线路（第" /tmp/upload/corpline_log.txt 2>/dev/null; }
+blackhole_on() { corp iptables -I INPUT -s 10.235.128.0/18 -j DROP; corp iptables -I FORWARD -s 10.235.128.0/18 -j DROP; }
+blackhole_off() { corp iptables -D INPUT -s 10.235.128.0/18 -j DROP 2>/dev/null; corp iptables -D FORWARD -s 10.235.128.0/18 -j DROP 2>/dev/null; true; }
+ensure_now() { rt /bin/sh /koolshare/scripts/corpline_config.sh ensure; }
+fresh_active() { # 回到干净的"公司专线正常"状态
+	blackhole_off
+	corp iptables -F INPUT 2>/dev/null
+	wan tc qdisc del dev wan-corp root 2>/dev/null
+	rt ip link set eth0 up
+	rt ip route replace default via 100.64.0.1
+	[ -z "$(cl_pid)" ] && api 1
+	if [ "$(state)" != active ]; then
+		rt /bin/sh -c 'kill -USR1 $(cat /tmp/corpline/corpline.pid)' 2>/dev/null
+		wait_state active 240 >/dev/null
+	fi
+}
+
+scenario_install() {
+	CASE="安装（未启用）"
+	snapshot >$S/s0.txt
+	rm -rf /tmp/ks && mkdir -p /tmp/ks && tar -C /tmp/ks -xzf ../corpline.tar.gz
+	rt busybox sh /tmp/ks/corpline/install.sh >$S/install.log 2>&1
+	snapshot >$S/s1.txt
+	local d=$(diff <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s0.txt) <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s1.txt) | grep -c '^[<>]')
+	check "安装后网络改动条数" "$d" 0
+	check "未启用时设备线路" "$(path lan1 100.64.2.80)" direct
+	mkdir -p /koolshare/configs/corpline
+	printf 'cafile=%s\noc_ld_library_path=\nisp_dns_file=%s\n' $S/pki/ca.pem $S/resolv.dnsmasq >/koolshare/configs/corpline/lab.conf
+}
+
+scenario_enable() {
+	CASE="启用"
+	dbset corpline_enable=1
+	dbset corpline_server=vpn.corp.test:8443
+	dbset corpline_user=tester
+	dbset corpline_password=$(printf s3cret | base64)
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t1\n' | base64 -w0)
+	local t0=$(date +%s)
+	api 1
+	local t=$(wait_state active 60)
+	ok "从点启用到公司专线可用：${t} 秒（含建隧道与首轮探测）"
+	check "普通设备线路" "$(path lan1 100.64.2.80)" tunnel
+	check "只有公司线路能到的网站" "$(path lan1 203.0.113.80)" tunnel
+	check "直连设备（Mac Studio）线路" "$(path lan2 100.64.2.80)" direct
+	check "路由器自身线路" "$(path rt 100.64.2.80)" direct
+	check "普通域名由谁解析" "$(which_dns)" company
+	check "google 解析（公司 DNS，不受污染）" "$(resolve x www.google.com)" 203.0.113.80
+	check "Apple 解析（海外 DNS 例外）" "$(resolve x apps.apple.com)" 203.0.113.81
+	check "公司内网域名" "$(resolve x git.corp.test)" 172.24.10.10
+	check "IPv6 记录（V1 不走 IPv6，回空）" "[$(resolve x www.google.com lan1 AAAA)]" "[]"
+	check "rp_filter 已放宽" "$(rt cat /proc/sys/net/ipv4/conf/all/rp_filter)" 0
+	check "看护任务已登记" "$(grep -c corpline_ensure $S/cron)" 1
+}
+
+scenario_company_dns_down() {
+	CASE="公司 DNS 无响应"
+	fresh_active
+	corp iptables -I INPUT -d 172.24.4.79 -p udp --dport 53 -j DROP
+	corp iptables -I INPUT -d 172.24.4.79 -p tcp --dport 53 -j DROP
+	local t0=$(date +%s%N)
+	local w=$(which_dns)
+	local ms=$((($(date +%s%N) - t0) / 1000000))
+	check "公司 DNS 不应答时由谁解析" "$w" overseas
+	ok "该次解析耗时 ${ms} ms（公司 DNS 300 ms 未回即并行问海外 DNS）"
+	for i in 1 2 3 4 5 6; do resolve x a$i.which.test >/dev/null; done
+	sleep 50
+	check "公司 DNS 坏了不算线路坏了（50 秒后状态）" "$(state)" active
+	if timeline_has "公司 DNS 无响应"; then ok "时间线写明「公司 DNS 无响应，已改用备用 DNS」"; else bad "时间线没有公司 DNS 故障记录"; fi
+	local t1=$(date +%s%N)
+	which_dns >/dev/null
+	ok "公司 DNS 被判不健康后，单次解析耗时 $((($(date +%s%N) - t1) / 1000000)) ms（不再等 300 ms）"
+	corp iptables -D INPUT -d 172.24.4.79 -p udp --dport 53 -j DROP
+	corp iptables -D INPUT -d 172.24.4.79 -p tcp --dport 53 -j DROP
+	for i in $(seq 1 8); do which_dns >/dev/null; sleep 1; done
+	check "公司 DNS 恢复后由谁解析" "$(which_dns)" company
+}
+
+scenario_blackhole() {
+	CASE="线路黑洞（隧道在但不通）"
+	fresh_active
+	blackhole_on
+	local t=$(wait_state fallback 90)
+	ok "从不通到切直连：${t} 秒（设计约 45 秒：每 15 秒探测、连续 3 次失败）"
+	check "直连后设备线路" "$(path lan1 100.64.2.80)" direct
+	check "直连后 DNS" "$(which_dns)" isp
+	# 运营商 DNS 的答案 TTL 被压到 30 秒，切回后污染记录很快过期
+	local ttl=$(lan1 dig +noall +answer r$RANDOM.which.test @192.168.50.1 | awk '{print $2}' | head -n1)
+	if [ -n "$ttl" ] && [ "$ttl" -le 30 ]; then ok "直连期间解析 TTL ≤ 30 秒（实际 $ttl）"; else bad "直连期间 TTL 未压低：$ttl"; fi
+	local s0=$(oc_starts)
+	sleep 95
+	local s1=$(oc_starts)
+	if [ "$s1" -gt "$s0" ]; then ok "隧道一直不通：直连后约 80 秒主动重建连接（第 $s1 次）"; else bad "隧道不通但没有重建"; fi
+	# 直连期间建立一条长连接，切回公司线路后它应继续完成
+	lan1 curl -s -o /dev/null -w '%{http_code} %{size_download}\n' "http://100.64.2.80/big?mb=4&kbps=20" >$S/longconn.txt 2>&1 &
+	local lc=$!
+	sleep 2
+	blackhole_off
+	local t2=$(wait_state active 260)
+	ok "线路恢复后切回公司专线：${t2} 秒（含重连等待与 120 秒稳定期）"
+	check "切回后设备线路" "$(path lan1 100.64.2.80)" tunnel
+	wait $lc
+	check "直连期间开始的下载在切回后没有中断（4 MB）" "$(cat $S/longconn.txt)" "200 4194304"
+}
+
+scenario_kill_oc() {
+	CASE="openconnect 被杀"
+	fresh_active
+	kill -9 $(oc_pid)
+	local t=$(wait_state fallback 10)
+	ok "进程消失到切直连：${t} 秒"
+	check "设备线路（内核兜底，立即直连）" "$(path lan1 100.64.2.80)" direct
+	local t2=$(wait_state active 240)
+	ok "5 秒后重连，稳定 120 秒后切回：${t2} 秒"
+}
+
+scenario_freeze_oc() {
+	CASE="openconnect 卡死（SIGSTOP）"
+	fresh_active
+	local p=$(oc_pid)
+	kill -STOP $p
+	local t=$(wait_state fallback 90)
+	ok "卡死到切直连：${t} 秒"
+	check "设备线路" "$(path lan1 100.64.2.80)" direct
+	local n=0
+	while [ -d /proc/$p ] && [ $n -lt 150 ]; do sleep 1; n=$((n + 1)); done
+	if [ ! -d /proc/$p ]; then ok "卡死的进程被结束（SIGTERM 无效时 12 秒后 SIGKILL），用时约 ${n} 秒"; else bad "卡死的 openconnect 没有被结束"; kill -9 $p; fi
+	local t2=$(wait_state active 260)
+	ok "重建后切回公司专线：${t2} 秒"
+}
+
+scenario_latency() {
+	CASE="线路变慢"
+	fresh_active
+	wan tc qdisc add dev wan-corp root netem delay 1000ms
+	local t=$(wait_state watching 40)
+	ok "往返延迟 +1 秒→「有点慢，正在观察」：${t} 秒；仍走公司线路"
+	check "观察中设备线路" "$(path lan1 100.64.2.80 8)" tunnel
+	wan tc qdisc del dev wan-corp root
+	local t2=$(wait_state active 40)
+	ok "延迟恢复后回到正常：${t2} 秒"
+}
+
+scenario_wan_flap() {
+	CASE="宽带断开 40 秒"
+	fresh_active
+	rt ip link set eth0 down
+	local t=$(wait_state fallback 90)
+	ok "宽带断开后切直连：${t} 秒"
+	sleep 10
+	rt ip link set eth0 up
+	rt ip route replace default via 100.64.0.1   # 真机上由 WAN 的 DHCP/PPPoE 重新下发
+	local t2=$(wait_state active 200)
+	ok "宽带恢复后自动回到公司专线：${t2} 秒（宽带恢复即重连，不等退避；再稳定 120 秒）"
+	check "设备线路" "$(path lan1 100.64.2.80)" tunnel
+}
+
+scenario_server_down() {
+	CASE="公司服务器连不上（重连退避）"
+	fresh_active
+	# 前面的场景已把退避拉长（稳定 10 分钟才清零，这是有意的）；这里从头看退避节奏，先重启一次服务
+	api 1
+	wait_state active 60 >/dev/null
+	corp iptables -I INPUT -p tcp --dport 8443 -j DROP
+	corp iptables -I INPUT -p udp --dport 8443 -j DROP
+	local l0=$(wc -l </tmp/upload/corpline_log.txt)
+	kill -9 $(oc_pid)
+	wait_state fallback 10 >/dev/null
+	sleep 150
+	local gaps=$(tail -n +$((l0 + 1)) /tmp/upload/corpline_log.txt | grep -E "连接公司线路（第" | awk '{print $1}' | tr '\n' ' ')
+	local n=$(echo $gaps | wc -w)
+	if [ "$n" -ge 3 ]; then ok "150 秒内重连 $n 次（每次 45 秒连不上就放弃，再按 5/10/30 秒退避）：$gaps"; else bad "150 秒内只重连 $n 次（应 ≥ 3，连接超时没生效？）：$gaps"; fi
+	check "期间设备线路" "$(path lan1 100.64.2.80)" direct
+	check "期间 DNS" "$(which_dns)" isp
+	corp iptables -D INPUT -p tcp --dport 8443 -j DROP
+	corp iptables -D INPUT -p udp --dport 8443 -j DROP
+	rt /bin/sh -c 'kill -USR1 $(cat /tmp/corpline/corpline.pid)'
+	local t=$(wait_state active 200)
+	ok "服务器恢复 + 点「立即重试」后回到公司专线：${t} 秒"
+}
+
+scenario_crash() {
+	CASE="插件守护程序崩溃"
+	fresh_active
+	rm -f /tmp/corpline/restarts
+	touch $S/crond.paused   # 不靠每分钟的定时看护，验证崩溃后自己就能恢复
+	local op=$(oc_pid)
+	kill -9 $(cl_pid)
+	sleep 1
+	if [ ! -d /proc/$op ]; then ok "守护程序一死，openconnect 随之退出（不留孤儿）"; else bad "openconnect 成了孤儿"; fi
+	local t0=$(date +%s%N)
+	local r=$(resolve x r$RANDOM.which.test)
+	local ms=$((($(date +%s%N) - t0) / 1000000))
+	[ "$r" = 100.64.2.80 ] || [ "$r" = 203.0.113.80 ] && ok "崩溃后 1 秒内解析照常：${ms} ms" || bad "崩溃后解析失败：$r（${ms} ms）"
+	local t=$(wait_state active 60)
+	ok "不等定时看护，崩溃后自动拉起回到公司专线：${t} 秒"
+	check "设备线路" "$(path lan1 100.64.2.80)" tunnel
+	rm -f $S/crond.paused
+}
+
+scenario_crash_loop() {
+	CASE="反复崩溃 → 自动停用"
+	fresh_active
+	rm -f /tmp/corpline/restarts
+	touch $S/crond.paused
+	local i=0
+	while [ $i -lt 5 ] && [ "$(/koolshare/bin/dbus get corpline_paused)" != 1 ]; do
+		local w=0
+		while [ -z "$(cl_pid)" ] && [ $w -lt 15 ]; do sleep 1; w=$((w + 1)); done
+		kill -9 $(cl_pid) 2>/dev/null
+		i=$((i + 1))
+		sleep 4
+	done
+	check "崩溃 3 次后自动停用" "$(/koolshare/bin/dbus get corpline_paused)/$i" 1/3
+	check "停用后进程" "$(pgrep -c -x corpline)" 0
+	check "停用后设备线路" "$(path lan1 100.64.2.80)" direct
+	check "停用后网络规则" "$(rt iptables-save | grep -ci corpline)" 0
+	check "停用后 DNS" "$(which_dns)" isp
+	api 3
+	rm -f $S/crond.paused
+	local t=$(wait_state active 60)
+	ok "点「重新启用」后恢复：${t} 秒"
+}
+
+scenario_notify() {
+	CASE="异常通知"
+	fresh_active
+	: >$S/hook.log
+	: >$S/http_response.log
+	dbset corpline_notify=feishu
+	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/ok
+	api 4
+	check "只保存通知设置不影响线路" "$(state)" active
+	rt busybox sh /koolshare/scripts/corpline_config.sh 777 5 >/dev/null 2>&1
+	check "飞书测试通知（地址正确）" "$(tail -n1 $S/http_response.log)" 777
+	grep -q '测试通知' $S/hook.log && ok "飞书收到测试内容" || bad "飞书没收到内容"
+	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/bad
+	rt busybox sh /koolshare/scripts/corpline_config.sh 778 5 >/dev/null 2>&1
+	check "飞书测试通知（地址或签名不对，飞书仍回 HTTP 200）" "$(tail -n1 $S/http_response.log)" fail
+	dbset corpline_notify=bark
+	dbset corpline_notify_url=http://100.64.2.81:8080/bark/KEY/
+	rt busybox sh /koolshare/scripts/corpline_config.sh 779 5 >/dev/null 2>&1
+	check "Bark 测试通知" "$(tail -n1 $S/http_response.log)" 779
+	dbset corpline_notify_url=
+	rt busybox sh /koolshare/scripts/corpline_config.sh 780 5 >/dev/null 2>&1
+	check "没填地址" "$(tail -n1 $S/http_response.log)" nourl
+	# 自动停用时推送
+	dbset corpline_notify=feishu
+	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/ok
+	: >$S/hook.log
+	rm -f /tmp/corpline/restarts
+	touch $S/crond.paused
+	local i=0
+	while [ $i -lt 5 ] && [ "$(/koolshare/bin/dbus get corpline_paused)" != 1 ]; do
+		local w=0
+		while [ -z "$(cl_pid)" ] && [ $w -lt 15 ]; do sleep 1; w=$((w + 1)); done
+		kill -9 $(cl_pid) 2>/dev/null
+		i=$((i + 1))
+		sleep 4
+	done
+	grep -q '已自动停用' $S/hook.log && ok "自动停用时推送：$(grep -o '已自动停用[^"]*' $S/hook.log | head -n1)" || bad "自动停用没有推送"
+	dbset corpline_notify=off
+	api 3
+	rm -f $S/crond.paused
+	wait_state active 60 >/dev/null
+}
+
+scenario_power_loss() {
+	CASE="运行中突然断电"
+	fresh_active
+	# 断电：外壳和守护程序都来不及收尾（先杀外壳，免得它替我们清理）
+	pkill -9 -f "^/bin/sh -c /koolshare/bin/corpline run"
+	kill -9 $(cl_pid)
+	sleep 1
+	# 重启后内存里的东西都没了，只剩 /jffs 与 dbus 里的设置
+	rt /koolshare/bin/corpline cleanup -c /dev/null >/dev/null 2>&1
+	printf 'server=127.0.0.1#5354\nstrict-order\n' >/jffs/configs/dnsmasq.d/corpline.conf
+	rt /bin/sh -c 'kill $(cat /var/run/dnsmasq.pid)'; sleep 0.5; rt dnsmasq -C $S/dnsmasq-rt.conf; sleep 0.5
+	rm -rf /tmp/corpline /tmp/upload/corpline_status.json
+	dbset corpline_paused=1   # 最坏情况：断电前插件已处于自动停用（或 openconnect 所在 U 盘没挂上）
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	check "开机后残留的 DNS 转发配置" "$(ls /jffs/configs/dnsmasq.d/ | grep -c corpline)" 0
+	local t0=$(date +%s%N)
+	local r=$(resolve x r$RANDOM.which.test)
+	local ms=$((($(date +%s%N) - t0) / 1000000))
+	check "开机后解析" "$r" 100.64.2.80
+	ok "开机后单次解析耗时 ${ms} ms（不再先等超时）"
+	api 3
+	local t=$(wait_state active 60)
+	ok "点「重新启用」后回到公司专线：${t} 秒"
+}
+
+scenario_auth() {
+	CASE="密码错误"
+	fresh_active
+	dbset corpline_password=$(printf wrong | base64)
+	api 1
+	local t=$(wait_state autherr 30)
+	ok "识别为账号密码错误：${t} 秒"
+	local s0=$(oc_starts)
+	sleep 120
+	check "两分钟内没有再尝试（防账号风控）" "$(oc_starts)" "$s0"
+	check "设备线路" "$(path lan1 100.64.2.80)" direct
+	check "DNS" "$(which_dns)" isp
+	dbset corpline_password=$(printf s3cret | base64)
+	api 1
+	local t2=$(wait_state active 60)
+	ok "改对密码后恢复：${t2} 秒"
+}
+
+scenario_fw_rebuild() {
+	CASE="固件重建防火墙"
+	fresh_active
+	rt iptables -t mangle -D PREROUTING -i br0 -j CORPLINE
+	rt iptables -t nat -D POSTROUTING -j CORPLINE_NAT
+	check "规则被清后新连接线路（落回直连，不断网）" "$(path lan1 100.64.2.80)" direct
+	rt /bin/sh /koolshare/init.d/N96corpline.sh start_nat
+	check "N96 钩子补回后线路" "$(path lan1 100.64.2.80)" tunnel
+	rt iptables -t mangle -D PREROUTING -i br0 -j CORPLINE
+	rt iptables -t nat -D POSTROUTING -j CORPLINE_NAT
+	local n=0
+	while [ $n -lt 70 ] && ! rt iptables -t mangle -C PREROUTING -i br0 -j CORPLINE 2>/dev/null; do sleep 1; n=$((n + 1)); done
+	if [ $n -lt 70 ]; then ok "即使没有钩子，守护程序 ${n} 秒内自行补回"; else bad "规则没有被补回"; fi
+}
+
+scenario_cn_direct() {
+	CASE="国内网站直连"
+	fresh_active
+	mkdir -p /koolshare/configs/corpline
+	printf 'server=/baidu.com/114.114.114.114\nserver=/qq.com/114.114.114.114\n' >/koolshare/configs/corpline/china-domains.conf
+	for i in $(seq 1 1100); do echo "server=/cn-filler-$i.com/114.114.114.114"; done >>/koolshare/configs/corpline/china-domains.conf
+	dbset corpline_cn_direct=1
+	api 1
+	wait_state active 60 >/dev/null
+	check "中国服务域名由谁解析" "$(resolve x www.baidu.com)" 100.64.2.80
+	check "访问中国服务（按域名进 ipset）" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.0.2
+	check "其它网站仍走公司线路" "$(path lan1 100.64.2.81)" tunnel
+	check "Apple 仍走海外解析" "$(resolve x apps.apple.com)" 203.0.113.81
+	dbset corpline_cn_direct=0
+	api 1
+	wait_state active 60 >/dev/null
+	check "关闭后中国服务走公司线路" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.1.10
+}
+
+scenario_resources() {
+	CASE="资源占用"
+	fresh_active
+	local p=$(cl_pid)
+	local t0=$(awk '{print $14+$15}' /proc/$p/stat)
+	sleep 60
+	local t1=$(awk '{print $14+$15}' /proc/$p/stat)
+	local hz=$(getconf CLK_TCK)
+	ok "空闲 60 秒 CPU 时间：$(echo "scale=3; ($t1-$t0)/$hz" | bc) 秒（约 $(echo "scale=2; ($t1-$t0)*100/$hz/60" | bc)%）"
+	ok "守护程序常驻内存：$(awk '/VmRSS/{print $2}' /proc/$p/status) KB（预算 6144 KB）"
+	ok "openconnect 常驻内存：$(awk '/VmRSS/{print $2}' /proc/$(oc_pid)/status) KB"
+	ok "程序体积：$(stat -c %s /koolshare/bin/corpline) 字节（预算 2 MB）"
+	# 1000 次 DNS 查询的压力
+	local t2=$(awk '{print $14+$15}' /proc/$p/stat)
+	local s=$(date +%s%N)
+	for i in $(seq 1 1000); do echo "q$i.which.test"; done | lan1 xargs -P 20 -n 50 dig +short +time=2 +tries=1 @192.168.50.1 >/dev/null
+	local ms=$((($(date +%s%N) - s) / 1000000))
+	local t3=$(awk '{print $14+$15}' /proc/$p/stat)
+	ok "1000 次不同域名查询（20 并发）：${ms} ms，守护程序 CPU $(echo "scale=3; ($t3-$t2)/$hz" | bc) 秒，之后内存 $(awk '/VmRSS/{print $2}' /proc/$p/status) KB"
+	local logkb=$(du -k /tmp/upload/corpline_log.txt | cut -f1)
+	ok "日志在内存盘：${logkb} KB（单段上限 128 KB）"
+}
+
+scenario_bootloop() {
+	CASE="开机即坏保护"
+	fresh_active
+	dbset corpline_boots=0
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	check "两次开机后仍在运行" "$(pgrep -c -x corpline)" 1
+	rt /bin/sh /koolshare/init.d/S96corpline.sh start
+	check "第三次开机（未稳定运行过）自动停用" "$(/koolshare/bin/dbus get corpline_paused)" 1
+	check "停用后网络规则" "$(rt iptables-save | grep -ci corpline)" 0
+	api 3
+	wait_state active 60 >/dev/null
+}
+
+scenario_disable_uninstall() {
+	CASE="关闭与卸载"
+	fresh_active
+	dbset corpline_enable=0
+	api 1
+	sleep 2
+	snapshot >$S/s2.txt
+	local d=$(diff <(sed -n '/## iptables/,/## processes/p' $S/s1.txt) <(sed -n '/## iptables/,/## processes/p' $S/s2.txt))
+	if [ -z "$d" ]; then ok "关闭后网络与安装后未启用时完全一致"; else bad "关闭后有残留：$(echo "$d" | tr '\n' ' ' | head -c 300)"; fi
+	check "关闭后设备线路" "$(path lan1 100.64.2.80)" direct
+	check "关闭后 DNS" "$(which_dns)" isp
+	rt busybox sh /koolshare/scripts/uninstall_corpline.sh >$S/uninstall.log 2>&1
+	snapshot >$S/s3.txt
+	local d2=$(diff <(grep -v "^lab.conf\|configs/corpline" $S/s0.txt) <(grep -v "configs/corpline" $S/s3.txt))
+	if [ -z "$d2" ]; then ok "卸载后与安装前完全一致（网络、进程、定时任务、文件）"; else bad "卸载后有残留：$(echo "$d2" | tr '\n' ' ' | head -c 300)"; fi
+	check "卸载后 dbus 设置" "$(/koolshare/bin/dbus list corpline_ | wc -l)" 0
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct resources bootloop disable_uninstall"
+LIST=${*:-$ALL}
+{
+	echo "# 公司专线 沙盒演练结果"
+	echo
+	echo "- 时间：$(date '+%F %T')"
+	echo "- 程序：$(/koolshare/bin/corpline version 2>/dev/null || ../plugin/corpline/bin/corpline version)；内核 $(uname -r)；dnsmasq $(dnsmasq --version | head -n1 | awk '{print $3}')；openconnect $(openconnect --version | head -n1 | awk '{print $3}')"
+	echo
+	echo "| 场景 | 结果 | 证据 |"
+	echo "|---|---|---|"
+} >$OUT
+for s in $LIST; do
+	log "==== $s"
+	scenario_$s
+done
+echo >>$OUT
+echo "合计：通过 $PASS，失败 $FAIL" >>$OUT
+cp /tmp/upload/corpline_log.txt $REPORT/corpline_log.txt 2>/dev/null
+log "完成：通过 $PASS，失败 $FAIL"

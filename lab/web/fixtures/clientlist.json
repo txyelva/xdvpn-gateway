@@ -1,0 +1,10 @@
+{"get_clientlist": {
+  "maclist": ["F0:2F:4B:12:34:56", "00:11:32:AB:CD:EF", "A4:83:E7:11:22:33", "3C:22:FB:44:55:66", "8C:85:90:77:88:99", "B8:27:EB:00:AA:BB"],
+  "F0:2F:4B:12:34:56": {"name": "Mac-Studio", "nickName": "Mac Studio", "ip": "192.168.50.198", "mac": "F0:2F:4B:12:34:56", "isOnline": "1"},
+  "00:11:32:AB:CD:EF": {"name": "DS920", "nickName": "NAS", "ip": "192.168.50.168", "mac": "00:11:32:AB:CD:EF", "isOnline": "1"},
+  "A4:83:E7:11:22:33": {"name": "iPhone", "nickName": "", "ip": "192.168.50.201", "mac": "A4:83:E7:11:22:33", "isOnline": "1"},
+  "3C:22:FB:44:55:66": {"name": "iPad", "nickName": "", "ip": "192.168.50.214", "mac": "3C:22:FB:44:55:66", "isOnline": "1"},
+  "8C:85:90:77:88:99": {"name": "Mac-mini", "nickName": "Mac mini", "ip": "192.168.50.244", "mac": "8C:85:90:77:88:99", "isOnline": "1"},
+  "B8:27:EB:00:AA:BB": {"name": "Living-Room-TV", "nickName": "客厅电视", "ip": "192.168.50.120", "mac": "B8:27:EB:00:AA:BB", "isOnline": "0"},
+  "ClientAPILevel": "2"
+}}

@@ -1,0 +1,16 @@
+{
+  "corpline_enable": "1",
+  "corpline_server": "vpn.xindong.com:8443",
+  "corpline_user": "demo.user",
+  "corpline_devices_lines": [
+    "F0:2F:4B:12:34:56\tMac Studio\t1",
+    "00:11:32:AB:CD:EF\tNAS\t0"
+  ],
+  "corpline_overseas_domains": "apple.com,mzstatic.com",
+  "corpline_cn_direct": "0",
+  "corpline_notify": "off",
+  "corpline_sensitivity": "normal",
+  "corpline_version": "0.1.0",
+  "corpline_admin_ip": "192.168.50.198",
+  "corpline_has_password": "1"
+}

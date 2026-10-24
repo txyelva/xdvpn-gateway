@@ -1,0 +1,9 @@
+#!/bin/bash
+# cru 模拟：任务存在 /tmp/lab/cron（每行 名字<TAB>表达式与命令）
+F=/tmp/lab/cron
+touch $F
+case "$1" in
+a) grep -v "^$2	" $F >$F.tmp || true; printf '%s\t%s\n' "$2" "$3" >>$F.tmp; mv $F.tmp $F ;;
+d) grep -v "^$2	" $F >$F.tmp || true; mv $F.tmp $F ;;
+l) cat $F ;;
+esac

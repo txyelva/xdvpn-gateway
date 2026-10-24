@@ -1,0 +1,12 @@
+/* 本机预览用的华硕后台外框替身（只为把页面放进相同的外框里看效果，不是华硕原样式） */
+body.bg{margin:0;padding:16px 0 40px;background:#21333e;font-family:Arial,"PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;color:#fff}
+table.content{width:1000px;margin:0 auto;border-collapse:collapse}
+table.content td{padding:0}
+#TopBanner{width:1000px;margin:0 auto 12px}
+.stub-banner{height:54px;background:#1a2a33;border-radius:4px 4px 0 0;display:flex;align-items:center;padding:0 20px;gap:16px;color:#8fa3ad;font-size:12px}
+.stub-banner b{font:700 17px Arial;letter-spacing:2px;color:#fff}
+.stub-banner i{flex:1}
+#mainMenu .m{height:40px;display:flex;align-items:center;padding:0 14px;background:#3A4042;border:1px solid #6B7071;margin-top:-1px;font:700 12px Verdana,"Microsoft YaHei",sans-serif;color:#cfd6d8;text-shadow:1px 1px 0 #000;width:185px;box-sizing:border-box}
+#mainMenu .m.on{background:#5b6b70;color:#fff}
+#mainMenu .cap{font-size:11px;color:#8fa3ad;padding:14px 4px 6px}
+.popup_bg{display:none}

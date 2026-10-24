@@ -1,0 +1,10 @@
+{
+ "dbus": {
+  "corpline_enable": "0",
+  "corpline_user": "",
+  "corpline_devices_lines": [],
+  "corpline_admin_ip": "",
+  "corpline_has_password": ""
+ },
+ "status": null
+}

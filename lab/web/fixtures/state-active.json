@@ -1,0 +1,74 @@
+{
+ "dbus": {},
+ "status": {
+  "v": 1,
+  "version": "0.1.0",
+  "state": "active",
+  "since": -11520,
+  "reason": "",
+  "live": true,
+  "line": "corp",
+  "tunnel": {
+   "up": true,
+   "ip": "10.235.152.121",
+   "dev": "corp0",
+   "mtu": "1464",
+   "gateway": "1.2.3.4",
+   "domain": "xindong.com",
+   "dtls": true,
+   "up_since": -11520
+  },
+  "rtt_ms": 23,
+  "traffic_today": {
+   "rx": 4213000000,
+   "tx": 310400000
+  },
+  "dns": {
+   "company": true,
+   "overseas": true,
+   "isp": true,
+   "queries": 12834,
+   "mode": "company"
+  },
+  "retry": {
+   "attempts_today": 1,
+   "daily_cap": 60,
+   "next_in": 0,
+   "connecting": false
+  },
+  "res": {
+   "mem_kb": 2100,
+   "oc_mem_kb": 7800,
+   "cpu_pct": "0.1"
+  },
+  "cn_direct": false,
+  "updated": 0,
+  "events": [
+   {
+    "t": -11520,
+    "l": "ok",
+    "m": "公司线路已稳定 120 秒，切回公司专线"
+   },
+   {
+    "t": -12000,
+    "l": "warn",
+    "m": "公司线路连续 3 次无响应，已临时切到直连，后台继续尝试"
+   },
+   {
+    "t": -12030,
+    "l": "info",
+    "m": "公司线路一次无响应，继续观察"
+   },
+   {
+    "t": -22800,
+    "l": "ok",
+    "m": "已连上公司专线，全家流量改走公司线路"
+   },
+   {
+    "t": -93600,
+    "l": "info",
+    "m": "防火墙被固件重建过，已恢复本插件规则"
+   }
+  ]
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "dbus": {},
+ "status": {
+  "v": 1,
+  "version": "0.1.0",
+  "state": "autherr",
+  "since": -16200,
+  "reason": "账号或密码不对",
+  "live": false,
+  "line": "direct",
+  "tunnel": {
+   "up": false
+  },
+  "rtt_ms": null,
+  "traffic_today": {
+   "rx": 4213000000,
+   "tx": 310400000
+  },
+  "dns": {
+   "company": null,
+   "overseas": null,
+   "isp": true,
+   "queries": 0,
+   "mode": "isp"
+  },
+  "retry": {
+   "attempts_today": 1,
+   "daily_cap": 60,
+   "next_in": 0,
+   "connecting": false
+  },
+  "res": {
+   "mem_kb": 1900,
+   "oc_mem_kb": 0,
+   "cpu_pct": "0.0"
+  },
+  "cn_direct": false,
+  "updated": 0,
+  "events": [
+   {
+    "t": -16200,
+    "l": "err",
+    "m": "公司账号登录失败（账号或密码不对），已停止重试，全家保持直连"
+   },
+   {
+    "t": -93600,
+    "l": "ok",
+    "m": "已连上公司专线，全家流量改走公司线路"
+   }
+  ]
+ }
+}

@@ -1,0 +1,17 @@
+08:02:14 开机启动，WAN 已就绪，开始连接
+08:02:15 openconnect: POST https://vpn.xindong.com:8443/
+08:02:16 openconnect: Connected to 1.2.3.4:8443
+08:02:18 openconnect: Got CONNECT response: HTTP/1.1 200 CONNECTED
+08:02:18 openconnect: DTLS connected (AES-256-GCM), MTU 1464
+08:02:19 隧道已建立：corp0 10.235.152.121，网关 1.2.3.4
+08:02:19 探测通过（82 ms），已加入切换规则
+08:02:19 [ok] 已连上公司专线，全家流量改走公司线路
+10:32:21 探测失败 1/3：公司 DNS 3 秒无应答
+10:32:21 [info] 公司线路一次无响应，继续观察
+10:32:36 探测失败 2/3：公司 DNS 3 秒无应答
+10:32:51 探测失败 3/3：公司 DNS 3 秒无应答
+10:32:51 已移除切换规则，DNS 改用运营商
+10:32:51 [warn] 公司线路连续 3 次无响应，已临时切到直连，后台继续尝试
+10:38:58 openconnect 重建连接
+10:39:05 openconnect: DTLS connected (AES-256-GCM), MTU 1464
+10:41:07 [ok] 公司线路已稳定 120 秒，切回公司专线
