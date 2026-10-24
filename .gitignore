@@ -1,3 +1,6 @@
 target/
 *.tar.gz
 /lab/.state/
+plugin/corpline/bin/corpline
+lab/web/shots/
+lab/report/
