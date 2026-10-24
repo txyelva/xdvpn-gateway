@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEFAULT_CONF: &str = "/tmp/corpline/corpline.conf";
+// 运行目录不能叫 /tmp/corpline*：软件中心安装/升级完会 rm -rf /tmp/<插件名>*
+const DEFAULT_CONF: &str = "/var/run/corpline/corpline.conf";
 
 enum Msg {
     Oc(oc::OcMsg),
@@ -54,8 +55,9 @@ fn main() {
         }),
         "cleanup" => {
             let c = Config::load(&conf).ok().unwrap_or_else(fallback_cfg);
-            net::cleanup(&c);
+            // 先让 dnsmasq 不再问已经不在的转发端口，再撤路由与防火墙
             net::dnsmasq_remove(&c);
+            net::cleanup(&c);
             0
         }
         "version" | "-V" | "--version" => {
@@ -92,7 +94,7 @@ fn with_cfg(p: &Path, f: impl FnOnce(&Config) -> i32) -> i32 {
 fn hook() -> i32 {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let reason = env("reason");
-    let run_dir = PathBuf::from(std::env::var("CORPLINE_RUN_DIR").unwrap_or_else(|_| "/tmp/corpline".into()));
+    let run_dir = PathBuf::from(std::env::var("CORPLINE_RUN_DIR").unwrap_or_else(|_| "/var/run/corpline".into()));
     let table: u32 = env("CORPLINE_TABLE").parse().unwrap_or(88);
     let dev = env("TUNDEV");
     let file = run_dir.join("tunnel.env");
@@ -168,6 +170,10 @@ struct Daemon {
     long_fallback_noted: bool,
     bypass: Vec<String>,
     wan_up: bool,
+    /// 总阀门上次没切成功（ipset 偶发出错）：定时重试，直到内核状态与状态机一致
+    live_pending: Option<bool>,
+    /// 本进程启动时刻（墙钟秒）：网页靠它区分"新启动的守护程序"与"即将被停掉的旧进程"
+    started: u64,
 }
 
 fn run(conf: &Path) -> i32 {
@@ -194,20 +200,8 @@ fn run(conf: &Path) -> i32 {
             }
         }
     }
-    let _ = std::fs::write(&pidf, std::process::id().to_string());
     let mut tl = Timeline::load(cfg.run_dir.join("events.txt"));
-    report::log(&format!("corpline {} 启动", VERSION));
 
-    oc::kill_orphan(&cfg);
-    let _ = std::fs::remove_file(cfg.tunnel_file());
-    if let Err(e) = net::setup(&cfg) {
-        tl.push(Level::Err, &format!("网络准备失败：{}，保持直连", e));
-        net::cleanup(&cfg);
-        let _ = std::fs::remove_file(&pidf);
-        return 4;
-    }
-
-    let (tx, rx) = mpsc::channel::<Msg>();
     let isp = net::isp_dns(&cfg);
     let shared = dns::Shared::new(dns::View { isp: isp.clone(), overseas: cfg.overseas_dns.clone(), ..Default::default() });
     let cn = if cfg.cn_direct {
@@ -234,20 +228,37 @@ fn run(conf: &Path) -> i32 {
         filter_aaaa: cfg.filter_aaaa,
         cn_ipset: net::SET_CN.to_string(),
     };
+    let (tx, rx) = mpsc::channel::<Msg>();
     let ntx = Mutex::new(tx.clone());
     let notify: dns::Notify = Box::new(move |l, s| {
         let _ = ntx.lock().unwrap().send(Msg::Note(l, s));
     });
-    match dns::Engine::bind(cfg.dns_listen, shared.clone(), st, notify) {
-        Ok(engine) => {
-            let _ = std::thread::Builder::new().name("dns".into()).stack_size(256 * 1024).spawn(move || engine.run());
-        }
+    // 先占 DNS 转发端口，再动网络：端口被占（多半是另一个 corpline 还在跑，pid 文件丢了也算）
+    // 就直接退出，不碰正在工作的那一份的规则
+    let engine = match dns::Engine::bind(cfg.dns_listen, shared.clone(), st, notify) {
+        Ok(e) => e,
         Err(e) => {
-            tl.push(Level::Err, &format!("DNS 转发端口 {} 被占用（{}），保持直连", cfg.dns_listen, e));
-            net::cleanup(&cfg);
-            let _ = std::fs::remove_file(&pidf);
-            return 5;
+            tl.push(Level::Err, &format!("DNS 转发端口 {} 被占用（{}），可能已有一份在运行；本次不启动", cfg.dns_listen, e));
+            return 3;
         }
+    };
+
+    let _ = std::fs::write(&pidf, std::process::id().to_string());
+    report::log(&format!("corpline {} 启动", VERSION));
+    oc::kill_orphan(&cfg);
+    let _ = std::fs::remove_file(cfg.tunnel_file());
+    if let Err(e) = net::setup(&cfg) {
+        tl.push(Level::Err, &format!("网络准备失败：{}，保持直连", e));
+        net::cleanup(&cfg);
+        let _ = std::fs::remove_file(&pidf);
+        return 4;
+    }
+    if let Err(e) = std::thread::Builder::new().name("dns".into()).stack_size(256 * 1024).spawn(move || engine.run()) {
+        // 没有 DNS 转发就不能装 dnsmasq 配置，撤掉改动退出（外层会按崩溃处理、稍后重启）
+        tl.push(Level::Err, &format!("DNS 转发线程启动失败：{}，保持直连", e));
+        net::cleanup(&cfg);
+        let _ = std::fs::remove_file(&pidf);
+        return 4;
     }
     if !net::dnsmasq_install(&cfg) {
         report::log("dnsmasq 配置写入或重启失败");
@@ -290,6 +301,8 @@ fn run(conf: &Path) -> i32 {
         long_fallback_noted: false,
         bypass: Vec::new(),
         wan_up: net::has_default_route(),
+        live_pending: None,
+        started: sys::wall_secs(),
     };
     let acts = d.m.start(sys::now_ms());
     d.apply(acts);
@@ -376,9 +389,11 @@ impl Daemon {
             }
             if now.saturating_sub(last_fw) >= 60_000 {
                 last_fw = now;
-                if !net::fw_present(&self.cfg) {
-                    self.tl.push(Level::Info, "防火墙被固件重建过，已恢复本插件规则");
-                    let _ = net::apply_fw(&self.cfg);
+                if !net::fw_present(&self.cfg) || !net::rules_present(&self.cfg) {
+                    self.tl.push(Level::Info, "防火墙或路由规则被固件重建过，已恢复本插件规则");
+                    if let Err(e) = net::apply_fw(&self.cfg) {
+                        report::log(&format!("恢复防火墙规则失败：{}", e));
+                    }
                     net::apply_rules(&self.cfg);
                 }
             }
@@ -439,8 +454,11 @@ impl Daemon {
                     }
                 }
                 Action::SetLive(on) => {
-                    if !net::set_live(on) {
-                        self.tl.push(Level::Err, "切换线路失败（ipset 执行出错）");
+                    if net::set_live(on) {
+                        self.live_pending = None;
+                    } else {
+                        self.live_pending = Some(on);
+                        self.tl.push(Level::Err, "切换线路失败（ipset 执行出错），稍后自动重试");
                     }
                     report::log(if on { "总阀门：打开（新连接走公司线路）" } else { "总阀门：关闭（新连接直连）" });
                     self.push_dns_view();
@@ -460,12 +478,15 @@ impl Daemon {
 
     /// 异常通知（飞书 / Bark）：交给外壳脚本发，后台执行不阻塞
     fn notify(&self, text: &str) {
-        if self.cfg.notify_cmd.is_empty() {
+        if self.cfg.notify_cmd.trim().is_empty() {
             return;
         }
-        let cmd = format!("{} '{}'", self.cfg.notify_cmd, text.replace('\'', ""));
+        // 文字作为独立参数传给外壳脚本，不经 shell 拼接
+        let mut argv: Vec<String> = self.cfg.notify_cmd.split_whitespace().map(String::from).collect();
+        argv.push(text.to_string());
         let _ = std::thread::Builder::new().name("notify".into()).stack_size(64 * 1024).spawn(move || {
-            sys::sh(&cmd);
+            let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+            sys::run(&argv[0], &args);
         });
     }
 
@@ -597,7 +618,8 @@ impl Daemon {
         let mut targets: Vec<(Ipv4Addr, String)> = self.company_dns().into_iter().map(|s| (s, company_name.clone())).collect();
         targets.extend(self.cfg.overseas_dns.iter().take(1).map(|s| (*s, overseas_name.clone())));
         let tx = self.tx.clone();
-        let _ = std::thread::Builder::new().name("probe".into()).stack_size(64 * 1024).spawn(move || {
+        let fail_tx = self.tx.clone();
+        let spawned = std::thread::Builder::new().name("probe".into()).stack_size(64 * 1024).spawn(move || {
             let mut detail = String::new();
             for (s, name) in targets {
                 match dns::resolve_once(s, Some(&t.dev), &name, Duration::from_millis(2500)) {
@@ -610,6 +632,10 @@ impl Daemon {
             }
             let _ = tx.send(Msg::Probe { ok: false, rtt: 0, detail });
         });
+        if spawned.is_err() {
+            // 线程起不来也要给状态机一个结果，否则"探测中"标记一直挂着，之后再也不探测
+            let _ = fail_tx.send(Msg::Probe { ok: false, rtt: 0, detail: "探测线程启动失败".into() });
+        }
     }
 
     fn refresh_bypass(&mut self) {
@@ -628,8 +654,20 @@ impl Daemon {
                 self.refresh_bypass();
                 self.isp = net::isp_dns(&self.cfg);
                 self.push_dns_view();
+                // 重拨后源地址可能变了：上游列表没变也要重建 DNS 套接字
+                self.dns.bump();
                 let a = self.m.handle(Event::WanBack, sys::now_ms());
                 self.apply(a);
+            }
+        }
+        // 反向路径过滤被固件改回会让隧道回包被丢，探测随即失败：每 5 秒看一眼（只读两个小文件）
+        if net::ensure_rp_filter(&self.cfg) {
+            report::log("反向路径过滤被改回，已重新关闭");
+        }
+        if let Some(on) = self.live_pending {
+            if net::set_live(on) {
+                self.live_pending = None;
+                report::log("总阀门重试切换成功");
             }
         }
         let why = self.oc.as_mut().and_then(|o| o.resource_check(dt.max(1)));
@@ -690,6 +728,7 @@ impl Daemon {
             .b("live", self.m.live())
             .s("line", if self.m.state.tunneled() { "corp" } else { "direct" })
             .o("tunnel", tunnel)
+            .n("started", self.started)
             .raw("rtt_ms", self.m.last_rtt.map(|x| x.to_string()).unwrap_or_else(|| "null".into()))
             .o("traffic_today", Json::obj().n("rx", self.traffic.0).n("tx", self.traffic.1))
             .o(

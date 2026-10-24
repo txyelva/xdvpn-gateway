@@ -65,6 +65,10 @@ impl Shared {
             self.gen.fetch_add(1, Ordering::SeqCst);
         }
     }
+    /// 上游不变也强制重建套接字（宽带重拨换了地址后，旧套接字绑着已经不存在的源地址）
+    pub fn bump(&self) {
+        self.gen.fetch_add(1, Ordering::SeqCst);
+    }
     pub fn get(&self) -> View {
         self.view.lock().unwrap().clone()
     }
@@ -80,7 +84,10 @@ pub struct Static {
 struct Up {
     kind: Kind,
     addr: Ipv4Addr,
+    dev: Option<String>,
     sock: Option<UdpSocket>,
+    /// 套接字发送出错（如源地址已失效）或没建起来时，最早何时再重建
+    reopen_at: u64,
     healthy: bool,
     fails: u32,
     oks: u32,
@@ -141,7 +148,7 @@ pub struct Engine {
     view: View,
     gen: u64,
     pending: HashMap<u16, Pending>,
-    next_id: u16,
+    rng: u32,
     ipset_tx: mpsc::Sender<Job>,
     tcp_busy: Arc<AtomicUsize>,
     kind_health: HashMap<Kind, bool>,
@@ -169,7 +176,7 @@ impl Engine {
             view: View::default(),
             gen: 0,
             pending: HashMap::new(),
-            next_id: (sys::wall_secs() as u16).wrapping_mul(7919),
+            rng: seed(),
             ipset_tx: tx,
             tcp_busy: Arc::new(AtomicUsize::new(0)),
             kind_health: HashMap::new(),
@@ -194,7 +201,7 @@ impl Engine {
                     sys::udp_connected(SocketAddrV4::new(a, 53), dev, true).ok()
                 };
                 let (healthy, fails, oks) = old.remove(&(kind, a)).unwrap_or((true, 0, 0));
-                ups.push(Up { kind, addr: a, sock, healthy, fails, oks, out: HashMap::new() });
+                ups.push(Up { kind, addr: a, dev: dev.map(String::from), sock, reopen_at: 0, healthy, fails, oks, out: HashMap::new() });
             }
         };
         add(Kind::Company, &v.company);
@@ -250,13 +257,28 @@ impl Engine {
         (self.notify)(msg.0, msg.1);
     }
 
+    /// 随机查询 ID（不可预测，配合各上游已 connect 的套接字，抵御伪造应答）
     fn alloc_id(&mut self) -> u16 {
         loop {
-            self.next_id = self.next_id.wrapping_add(1);
-            if !self.pending.contains_key(&self.next_id) {
-                return self.next_id;
+            self.rng ^= self.rng << 13;
+            self.rng ^= self.rng >> 17;
+            self.rng ^= self.rng << 5;
+            let id = (self.rng >> 8) as u16;
+            if !self.pending.contains_key(&id) {
+                return id;
             }
         }
+    }
+
+    /// 重建一个上游套接字（限频）：宽带重拨换了地址、或当初没建起来时用
+    fn reopen(&mut self, i: usize, now: u64) {
+        let u = &mut self.ups[i];
+        if now < u.reopen_at || (u.kind.via_tunnel() && u.dev.is_none()) {
+            return;
+        }
+        u.reopen_at = now + 2000;
+        // 旧套接字上还没回的查询留在 out 里，按超时计失败、照常换下一个上游
+        u.sock = sys::udp_connected(SocketAddrV4::new(u.addr, 53), u.dev.as_deref(), true).ok();
     }
 
     pub fn run(mut self) {
@@ -432,6 +454,7 @@ impl Engine {
         let mut healthy = false;
         let mut changed = false;
         let mut idx = Vec::new();
+        let mut reopen = Vec::new();
         for (i, u) in self.ups.iter_mut().enumerate() {
             if u.kind != kind {
                 continue;
@@ -440,6 +463,9 @@ impl Engine {
                 Some(s) => s.send(&q).is_ok(),
                 None => false,
             };
+            if !ok {
+                reopen.push(i);
+            }
             if ok {
                 u.out.insert(id, now);
                 sent += 1;
@@ -451,6 +477,9 @@ impl Engine {
         }
         if changed {
             self.health_changed(kind);
+        }
+        for i in reopen {
+            self.reopen(i, now);
         }
         if let Some(p) = self.pending.get_mut(&id) {
             p.waiting.extend(idx);
@@ -503,20 +532,23 @@ impl Engine {
             Some(x) if msg::is_response(&resp) => x,
             _ => return,
         };
-        if self.ups[ui].out.remove(&id).is_none() {
+        if !self.ups[ui].out.contains_key(&id) {
             return; // 迟到、重复或伪造
         }
         let kind = self.ups[ui].kind;
         let rc = msg::rcode(&resp);
+        // 先核对问题再占用这个等待位：一个对不上的包不能顶掉随后到的真应答
         let valid_q = match (self.pending.get(&id), msg::question(&resp)) {
             (Some(p), Some(q)) => q.name == p.qname && q.qtype == p.qtype,
+            (_, None) => rc != 0, // 不带问题的错误应答（如 FORMERR）：算这个上游失败
             (None, _) => true,
-            _ => false,
         };
         if !valid_q {
             return;
         }
-        let health = if rc == msg::RCODE_SERVFAIL || rc == 5 { self.ups[ui].fail() } else { self.ups[ui].ok() };
+        self.ups[ui].out.remove(&id);
+        let bad = rc == msg::RCODE_SERVFAIL || rc == 5 || msg::question(&resp).is_none();
+        let health = if bad { self.ups[ui].fail() } else { self.ups[ui].ok() };
         if health.is_some() {
             self.health_changed(kind);
         }
@@ -530,6 +562,10 @@ impl Engine {
             None => return,
         };
         let company_pending = company_pending && self.ups.iter().any(|u| u.kind == Kind::Company && u.sock.is_some() && u.healthy);
+        if msg::question(&resp).is_none() {
+            self.advance(id, sys::now_ms());
+            return;
+        }
         match plan::judge(class, tunneled, kind, rc, msg::ancount(&resp), company_pending) {
             Verdict::Accept => {
                 let p = self.pending.remove(&id).unwrap();
@@ -547,7 +583,8 @@ impl Engine {
 
     fn finish(&mut self, p: Pending, mut resp: Vec<u8>, from: Kind) {
         msg::set_id(&mut resp, p.orig_id);
-        if !p.tunneled {
+        // 直连期间、以及隧道全挂时紧急改问运营商得到的答案，都可能被污染：TTL 压短，恢复后很快过期
+        if !p.tunneled || (from == Kind::Isp && p.class != Class::Cn) {
             msg::cap_ttl(&mut resp, FALLBACK_TTL_CAP);
         }
         if p.tunneled && p.class == Class::Cn && from == Kind::Isp {
@@ -561,6 +598,11 @@ impl Engine {
     }
 
     fn on_timers(&mut self, now: u64) {
+        for i in 0..self.ups.len() {
+            if self.ups[i].sock.is_none() {
+                self.reopen(i, now);
+            }
+        }
         let mut changed = Vec::new();
         for u in self.ups.iter_mut() {
             let late: Vec<u16> = u.out.iter().filter(|(_, &t)| now >= t + UPSTREAM_TIMEOUT_MS).map(|(&i, _)| i).collect();
@@ -737,6 +779,14 @@ fn ipset_worker(rx: mpsc::Receiver<Job>, out: UdpSocket, set: String) {
             let _ = out.send_to(&j.resp, j.client);
         }
     }
+}
+
+/// 查询 ID 随机数的种子
+fn seed() -> u32 {
+    let mut b = [0u8; 4];
+    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_ok();
+    let x = if ok { u32::from_ne_bytes(b) } else { (sys::now_ms() as u32) ^ (std::process::id() << 16) ^ sys::wall_secs() as u32 };
+    x | 1 // xorshift 的状态不能为 0
 }
 
 /// 一次性解析（供探测与解析服务器地址用）：阻塞、可绑定网卡。返回 (A 记录, 往返毫秒)

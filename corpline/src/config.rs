@@ -88,13 +88,16 @@ fn num(v: Option<&String>, default: u32) -> u32 {
 
 pub fn parse_kv(text: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    for line in text.lines() {
-        let line = line.trim();
+    for raw in text.lines() {
+        let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some((k, v)) = line.split_once('=') {
-            m.insert(k.trim().to_string(), v.trim().to_string());
+            let k = k.trim();
+            // 密码原样保留（首尾空格也可能是密码的一部分）
+            let v = if k == "password" { raw.trim_start().split_once('=').map(|x| x.1).unwrap_or("").trim_end_matches('\r') } else { v.trim() };
+            m.insert(k.to_string(), v.to_string());
         }
     }
     m
@@ -162,7 +165,7 @@ impl Config {
             ipv6_guard: flag(g("ipv6_guard"), true),
 
             relaxed: s("sensitivity", "normal") == "relaxed",
-            run_dir: PathBuf::from(s("run_dir", "/tmp/corpline")),
+            run_dir: PathBuf::from(s("run_dir", "/var/run/corpline")),
             status_dir: PathBuf::from(s("status_dir", "/tmp/upload")),
             hook_cmd: s("hook_cmd", &format!("{} hook", self_exe.display())),
             notify_cmd: s("notify_cmd", ""),
@@ -173,6 +176,17 @@ impl Config {
         }
         if cfg.user.is_empty() || cfg.password.is_empty() {
             return Err("还没有填写公司账号或密码".into());
+        }
+        // 0 / 253–255 是内核的 unspec/default/main/local 表；mark 为 0 等于不打标记；
+        // rule_pref 还要给 oif 规则留出 rule_pref-1，且不能抢到 local 表（pref 0）前面
+        if cfg.table == 0 || cfg.table >= 253 {
+            return Err(format!("路由表编号 {} 不可用（不能是 0 或 253–255）", cfg.table));
+        }
+        if cfg.mark == 0 {
+            return Err("连接标记 mark 不能是 0".into());
+        }
+        if cfg.rule_pref < 2 || cfg.rule_pref >= 32766 {
+            return Err(format!("规则优先级 {} 不可用（应在 2–32765 之间）", cfg.rule_pref));
         }
         Ok(cfg)
     }
@@ -196,6 +210,15 @@ impl Config {
 mod tests {
     use super::*;
 
+    #[test]
+    fn rejects_unsafe_numbers() {
+        let base = "server=v\nuser=u\npassword=p\n";
+        for bad in ["table=0", "table=254", "mark=0", "rule_pref=1", "rule_pref=40000"] {
+            assert!(Config::from_map(&parse_kv(&format!("{}{}\n", base, bad))).is_err(), "{}", bad);
+        }
+        assert!(Config::from_map(&parse_kv(base)).is_ok());
+    }
+
     fn base() -> HashMap<String, String> {
         parse_kv("server=vpn.example.com:8443\nuser=u\npassword=p=q\n")
     }
@@ -204,6 +227,8 @@ mod tests {
     fn defaults() {
         let c = Config::from_map(&base()).unwrap();
         assert_eq!(c.password, "p=q");
+        let m = parse_kv("server=s\nuser=u\npassword= a b \n");
+        assert_eq!(m.get("password").unwrap(), " a b ");
         assert_eq!(c.mark, 0x5000);
         assert_eq!(c.overseas_domains, vec!["apple.com", "mzstatic.com"]);
         assert_eq!(c.server_host(), "vpn.example.com");

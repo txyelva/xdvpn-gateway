@@ -19,16 +19,14 @@ const CH_MSS: &str = "CORPLINE_MSS";
 const CH_GUARD: &str = "CORPLINE_GUARD";
 const CH_V6: &str = "CORPLINE6";
 
-fn ipt(table: &str, args: &[&str]) -> bool {
-    let mut a = vec!["-t", table];
-    a.extend_from_slice(args);
-    for _ in 0..3 {
-        let (ok, out) = run("iptables", &a);
+/// 执行 iptables / ip6tables；固件的 iptables 没有 -w，遇到 xtables 锁冲突稍等重试
+fn xt(bin: &str, args: &[&str]) -> bool {
+    for _ in 0..5 {
+        let (ok, out) = run(bin, args);
         if ok {
             return true;
         }
-        // 固件的 iptables 没有 -w，遇到锁冲突稍等重试
-        if !out.contains("temporarily unavailable") && !out.contains("xtables lock") {
+        if !out.contains("temporarily unavailable") && !out.contains("xtables lock") && !out.contains("Resource") {
             return false;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -36,20 +34,36 @@ fn ipt(table: &str, args: &[&str]) -> bool {
     false
 }
 
+fn ipt(table: &str, args: &[&str]) -> bool {
+    let mut a = vec!["-t", table];
+    a.extend_from_slice(args);
+    xt("iptables", &a)
+}
+
 fn ensure_chain(bin: &str, table: &str, chain: &str) {
-    if !run_ok(bin, &["-t", table, "-N", chain]) {
-        run_ok(bin, &["-t", table, "-F", chain]);
+    if !xt(bin, &["-t", table, "-N", chain]) {
+        xt(bin, &["-t", table, "-F", chain]);
     }
+}
+
+/// 改防火墙的互斥锁：守护程序的定时自检与 N96 钩子（corpline fw）、cleanup 可能同时动同一组链，
+/// 交错执行会把规则顺序搅乱（例如"直连目的地 RETURN"排到"打标记"之后）。进程退出时自动释放。
+pub fn fw_lock(cfg: &Config) -> Option<std::fs::File> {
+    let _ = std::fs::create_dir_all(&cfg.run_dir);
+    let f = std::fs::OpenOptions::new().create(true).write(true).open(cfg.run_dir.join("fw.lock")).ok()?;
+    use std::os::unix::io::AsRawFd;
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+    Some(f)
 }
 
 /// 在内建链最前面挂上跳转（已存在则不重复）
 fn ensure_jump(bin: &str, table: &str, builtin: &str, spec: &[&str]) {
     let mut check = vec!["-t", table, "-C", builtin];
     check.extend_from_slice(spec);
-    if !run_ok(bin, &check) {
+    if !xt(bin, &check) {
         let mut ins = vec!["-t", table, "-I", builtin, "1"];
         ins.extend_from_slice(spec);
-        run_ok(bin, &ins);
+        xt(bin, &ins);
     }
 }
 
@@ -57,15 +71,26 @@ fn drop_jump(bin: &str, table: &str, builtin: &str, spec: &[&str]) {
     let mut del = vec!["-t", table, "-D", builtin];
     del.extend_from_slice(spec);
     for _ in 0..8 {
-        if !run_ok(bin, &del) {
+        if !xt(bin, &del) {
             break;
         }
     }
 }
 
 fn drop_chain(bin: &str, table: &str, chain: &str) {
-    run_ok(bin, &["-t", table, "-F", chain]);
-    run_ok(bin, &["-t", table, "-X", chain]);
+    xt(bin, &["-t", table, "-F", chain]);
+    xt(bin, &["-t", table, "-X", chain]);
+}
+
+/// 一次性原子地重写 mangle 里本插件的两条链（iptables-restore --noflush：只换这两条链，不碰别的）
+fn restore_mangle(rules: &str) -> bool {
+    for _ in 0..5 {
+        if run_stdin("iptables-restore", &["--noflush"], rules) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
 }
 
 fn mark(cfg: &Config) -> String {
@@ -81,6 +106,7 @@ pub fn create_sets() -> bool {
 
 /// 建立/重建防火墙规则（幂等；固件重建防火墙后再调一次即可恢复）
 pub fn apply_fw(cfg: &Config) -> Result<(), String> {
+    let _g = fw_lock(cfg);
     if !create_sets() {
         return Err("创建 ipset 失败（固件缺少 ipset 支持？）".into());
     }
@@ -88,18 +114,29 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
     let lan = cfg.lan_if.as_str();
     let tun = cfg.tun_if.as_str();
 
-    // mangle：只在新连接时判断，结果记到 connmark；后续包按 connmark 恢复标记
-    ensure_chain("iptables", "mangle", CH_NEW);
-    ipt("mangle", &["-A", CH_NEW, "-m", "set", "--match-set", SET_BYPASS, "dst", "-j", "RETURN"]);
-    for mac in &cfg.direct_macs {
-        ipt("mangle", &["-A", CH_NEW, "-m", "mac", "--mac-source", mac, "-j", "RETURN"]);
+    // mangle：只在新连接时判断，结果记到 connmark；后续包按 connmark 恢复标记。
+    // 两条链用一次 iptables-restore 原子写入，规则顺序不会被并发执行打乱。
+    let body = |local: bool| {
+        let mut r = format!("*mangle\n:{} - [0:0]\n:{} - [0:0]\n", CH_NEW, CH_MARK);
+        // 发往路由器自己的地址（含 PPPoE 的公网 IP：从家里按公网地址访问自己的端口转发）不走隧道
+        if local {
+            r.push_str(&format!("-A {} -m addrtype --dst-type LOCAL -j RETURN\n", CH_NEW));
+        }
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_BYPASS));
+        for mac in &cfg.direct_macs {
+            r.push_str(&format!("-A {} -m mac --mac-source {} -j RETURN\n", CH_NEW, mac));
+        }
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CN));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_LIVE, m));
+        r.push_str(&format!("-A {} -m state --state NEW -j {}\n", CH_MARK, CH_NEW));
+        r.push_str(&format!("-A {} -m connmark --mark {} -j MARK --set-xmark {}\n", CH_MARK, m, m));
+        r.push_str("COMMIT\n");
+        r
+    };
+    // 固件若没有 addrtype 模块，退回不带这条（公网 IP 已由 bypass 集合里的直连网段大体覆盖）
+    if !restore_mangle(&body(true)) && !restore_mangle(&body(false)) {
+        return Err("写入 mangle 规则失败".into());
     }
-    ipt("mangle", &["-A", CH_NEW, "-m", "set", "--match-set", SET_CN, "dst", "-j", "RETURN"]);
-    ipt("mangle", &["-A", CH_NEW, "-m", "set", "--match-set", SET_LIVE, "dst", "-j", "CONNMARK", "--set-xmark", &m]);
-
-    ensure_chain("iptables", "mangle", CH_MARK);
-    ipt("mangle", &["-A", CH_MARK, "-m", "state", "--state", "NEW", "-j", CH_NEW]);
-    ipt("mangle", &["-A", CH_MARK, "-m", "connmark", "--mark", &m, "-j", "MARK", "--set-xmark", &m]);
     ensure_jump("iptables", "mangle", "PREROUTING", &["-i", lan, "-j", CH_MARK]);
 
     // 走隧道的 TCP 按隧道 MTU 调整 MSS，避免大包卡住
@@ -127,10 +164,24 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// 防火墙规则是否还在（固件重建防火墙会清掉它们）
+/// 防火墙规则是否还在（固件重建防火墙会清掉它们；只重建 filter 或 IPv6 的情况也要发现）
 pub fn fw_present(cfg: &Config) -> bool {
+    let v6 = !cfg.ipv6_guard
+        || !run_ok("ip6tables", &["-t", "filter", "-L", "FORWARD", "-n"])
+        || run_ok("ip6tables", &["-t", "filter", "-C", "FORWARD", "-j", CH_V6]);
     run_ok("iptables", &["-t", "mangle", "-C", "PREROUTING", "-i", &cfg.lan_if, "-j", CH_MARK])
+        && run_ok("iptables", &["-t", "mangle", "-C", "FORWARD", "-j", CH_MSS])
         && run_ok("iptables", &["-t", "nat", "-C", "POSTROUTING", "-j", CH_NAT])
+        && run_ok("iptables", &["-t", "filter", "-C", "INPUT", "-j", CH_GUARD])
+        && run_ok("iptables", &["-t", "filter", "-C", "FORWARD", "-j", CH_GUARD])
+        && v6
+}
+
+/// 两条 ip rule 是否都在（丢了的话页面显示公司专线、流量却在直连）
+pub fn rules_present(cfg: &Config) -> bool {
+    let (_, out) = run("ip", &["rule", "show"]);
+    let has = |pref: u32| out.lines().any(|l| l.starts_with(&format!("{}:", pref)) && l.contains(&format!("lookup {}", cfg.table)));
+    has(cfg.rule_pref) && has(cfg.rule_pref - 1)
 }
 
 fn rule_args(cfg: &Config, kind: &str) -> Vec<String> {
@@ -167,10 +218,21 @@ pub fn set_rp_filter(cfg: &Config) {
         }
         let _ = std::fs::write(&bak, s);
     }
-    // 隧道回包从 corp0 进来，严格反向路径过滤会把它当伪造包丢掉（旧版真机实测的转发不通根因）
+    ensure_rp_filter(cfg);
+}
+
+/// 隧道回包从 corp0 进来，严格反向路径过滤会把它当伪造包丢掉（旧版真机实测的转发不通根因）。
+/// 固件重启 WAN / 防火墙时可能改回 1，定时检查；返回是否改动过。
+pub fn ensure_rp_filter(cfg: &Config) -> bool {
+    let mut changed = false;
     for dev in ["all", cfg.lan_if.as_str()] {
-        let _ = std::fs::write(format!("/proc/sys/net/ipv4/conf/{}/rp_filter", dev), "0");
+        let p = format!("/proc/sys/net/ipv4/conf/{}/rp_filter", dev);
+        if std::fs::read_to_string(&p).map(|v| v.trim() != "0").unwrap_or(false) {
+            let _ = std::fs::write(&p, "0");
+            changed = true;
+        }
     }
+    changed
 }
 
 fn restore_rp_filter(cfg: &Config) {
@@ -257,6 +319,7 @@ pub fn setup(cfg: &Config) -> Result<(), String> {
 
 /// 撤掉本插件的一切网络改动（守护程序不在也能执行）
 pub fn cleanup(cfg: &Config) {
+    let _g = fw_lock(cfg);
     let lan = cfg.lan_if.as_str();
     set_live(false);
     drop_jump("iptables", "mangle", "PREROUTING", &["-i", lan, "-j", CH_MARK]);
@@ -269,7 +332,7 @@ pub fn cleanup(cfg: &Config) {
     drop_chain("iptables", "mangle", CH_MSS);
     drop_chain("iptables", "nat", CH_NAT);
     drop_chain("iptables", "filter", CH_GUARD);
-    if run_ok("ip6tables", &["-t", "filter", "-L", "FORWARD", "-n"]) {
+    if xt("ip6tables", &["-t", "filter", "-L", "FORWARD", "-n"]) {
         drop_jump("ip6tables", "filter", "FORWARD", &["-j", CH_V6]);
         drop_chain("ip6tables", "filter", CH_V6);
     }
@@ -338,7 +401,9 @@ pub fn dnsmasq_remove(cfg: &Config) {
 pub fn dnsmasq_flush(cfg: &Config) {
     if let Ok(p) = std::fs::read_to_string(&cfg.dnsmasq_pidfile) {
         if let Ok(pid) = p.trim().parse::<i32>() {
-            if sys::kill(pid, libc::SIGHUP) {
+            // pid 文件可能是旧的、已被别的进程复用：确认是 dnsmasq 再发信号
+            let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid)).unwrap_or_default();
+            if comm.trim() == "dnsmasq" && sys::kill(pid, libc::SIGHUP) {
                 return;
             }
         }
