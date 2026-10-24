@@ -37,3 +37,5 @@ sudo bash lab/teardown.sh          # 拆掉沙盒
 ## 安装须知
 
 安装后默认**不启用、不改任何网络设置**；在插件页填好公司账号再打开开关。需要 Entware 的 `openconnect`（`opkg install openconnect`）。关闭或卸载会撤掉全部改动，恢复到安装前。
+
+家里某台设备要自己再开公司 VPN（例如 Mac 上的 XDVPN）时，请把它加入「始终直连的设备」：公司 VPN 域名对不同 DNS 会给出不同入口地址，不加的话这台设备的 VPN 可能被套进路由器的专线里，变慢或连不上。
