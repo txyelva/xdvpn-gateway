@@ -7,7 +7,8 @@
 # 调用方式：
 #   init.d：      S96corpline.sh start（每次 WAN 连通都会调用，不只是开机） | N96corpline.sh start_nat
 #   网页 /_api/：  corpline_config.sh <请求id> <动作>
-#                 动作：1 应用（重启服务）  2 立即重试  3 重新启用  4 只保存（不影响线路，如通知设置）  5 发测试通知  0 关闭
+#                 动作：1 应用（重启服务）  2 立即重试  3 重新启用  4 只保存（不影响线路，如通知设置、安全防护白名单）
+#                       5 发测试通知  6 更新中国服务名单  7 解封（corpline_sec_unblock：IP 或 all）  8 更新恶意地址名单  0 关闭
 #   cru 看护：    corpline_config.sh ensure
 #   守护程序通知：corpline_config.sh notify "<文字>"
 # 注意：本固件上裸 sh 是内存读写工具，脚本互调一律用 /bin/sh。
@@ -174,6 +175,12 @@ direct_ports() {
 	}'
 }
 
+# 设备名字（安全提醒里写"家里的「NAS」"而不是 IP）：MAC<TAB>名字
+device_names() {
+	[ -z "$corpline_devices" ] && return
+	b64d "$corpline_devices" | awk -F'\t' '$1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ && $2 != "" {printf "%s\t%s\n", toupper($1), $2}'
+}
+
 # 配置文件一行：值里的换行去掉，防止一个设置项"多写出"别的配置行
 kv() { printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr -d '\r\n')"; }
 
@@ -218,6 +225,12 @@ gen_conf() {
 			kv cn_direct "${corpline_cn_direct:-0}"
 			echo "cn_list=$CFGDIR/china-domains.conf"
 			kv sensitivity "${corpline_sensitivity:-normal}"
+			# 安全防护：外来的自动封锁，家里设备只提醒；白名单改了不用重启（守护程序看到配置文件变化就更新）
+			kv sec_enable "${corpline_sec_enable:-1}"
+			kv sec_allow "$corpline_sec_allow"
+			kv sec_block_hours "${corpline_sec_block_hours:-24}"
+			echo "sec_bad_list=$CFGDIR/bad-ips.netset"
+			echo "names_file=$RUN/devices.tsv"
 			echo "hook_cmd=$BIN hook"
 			# 通知设置在发送时才读取，改通知不需要重启
 			echo "notify_cmd=/bin/sh $KSROOT/scripts/corpline_config.sh notify"
@@ -229,6 +242,7 @@ gen_conf() {
 	)
 	mv -f $CONF.tmp $CONF
 	chmod 600 $CONF
+	device_names >$RUN/devices.tsv.tmp && mv -f $RUN/devices.tsv.tmp $RUN/devices.tsv
 }
 
 # 能不能启动：缺账号密码、缺 openconnect（例如 Entware 所在 U 盘开机时还没挂上）属于"还不能启动"，
@@ -322,11 +336,17 @@ hooks_on() {
 	else
 		cru d corpline_cnlist >/dev/null 2>&1
 	fi
+	if [ "${corpline_sec_enable:-1}" = "1" ]; then
+		cru a corpline_badlist "47 4 * * 3 /bin/sh $KSROOT/scripts/corpline_config.sh update_bad"
+	else
+		cru d corpline_badlist >/dev/null 2>&1
+	fi
 }
 
 hooks_off() {
 	cru d corpline_ensure >/dev/null 2>&1
 	cru d corpline_cnlist >/dev/null 2>&1
+	cru d corpline_badlist >/dev/null 2>&1
 	rm -f $KSROOT/init.d/S96corpline.sh $KSROOT/init.d/N96corpline.sh
 }
 
@@ -346,7 +366,7 @@ pause() {
 load_modules() {
 	local os=$(uname -r) mod ko
 	modprobe tun >/dev/null 2>&1
-	for mod in ip_set ip_set_hash_net ip_set_hash_ip xt_set xt_mark xt_connmark xt_mac xt_state xt_TCPMSS xt_addrtype; do
+	for mod in ip_set ip_set_hash_net ip_set_hash_ip ip_set_hash_ipportip ip_set_bitmap_port xt_set xt_mark xt_connmark xt_mac xt_state xt_TCPMSS xt_addrtype xt_multiport xt_hashlimit; do
 		lsmod | grep -q "^$mod " && continue
 		modprobe $mod >/dev/null 2>&1 && continue
 		ko=$(find /lib/modules/$os -name "$mod.ko" 2>/dev/null | head -n1)
@@ -513,6 +533,56 @@ update_cn() {
 	return 1
 }
 
+# 公开的恶意 IP 名单（FireHOL level1：Spamhaus DROP、DShield 等汇总，以"不误伤"为原则）：
+# 安装包里自带一份，之后每周更新。守护程序看到文件变化会自己重新装进内核，不用重启。
+# 状态写进 dbus（corpline_bad_*）：state / count / time / error
+BAD_PATH=firehol/blocklist-ipsets@master/firehol_level1.netset
+BAD_URLS="https://cdn.jsdelivr.net/gh/$BAD_PATH https://fastly.jsdelivr.net/gh/$BAD_PATH https://testingcf.jsdelivr.net/gh/$BAD_PATH https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset"
+update_bad() {
+	local dst=$CFGDIR/bad-ips.netset tmp=$CFGDIR/bad-ips.tmp n rc why u
+	[ -n "$(cat $RUN/bad.pid 2>/dev/null)" ] && grep -q corpline_config /proc/$(cat $RUN/bad.pid)/cmdline 2>/dev/null && return 1
+	mkdir -p $CFGDIR $RUN
+	echo $$ >$RUN/bad.pid
+	dbus set corpline_bad_state=downloading
+	for u in $BAD_URLS; do
+		rm -f $tmp
+		curl -fsS --connect-timeout 15 -m 120 -o $tmp.raw "$u" 2>/dev/null
+		rc=$?
+		[ $rc -ne 0 ] && { why=$rc; continue; }
+		grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' $tmp.raw >$tmp
+		rm -f $tmp.raw
+		n=$(wc -l <$tmp)
+		[ "${n:-0}" -ge 1000 ] || { why=short; continue; }
+		mv -f $tmp $dst
+		dbus set corpline_bad_count=$n
+		dbus set corpline_bad_time=$(date +%s)
+		dbus remove corpline_bad_error
+		dbus set corpline_bad_state=ok
+		rm -f $RUN/bad.pid
+		say "恶意地址名单已更新：$n 条"
+		return 0
+	done
+	rm -f $tmp $tmp.raw $RUN/bad.pid
+	why=$(cn_reason ${why:-7})
+	dbus set corpline_bad_error="$why"
+	dbus set corpline_bad_state=failed
+	say "恶意地址名单更新失败（$why），继续用旧名单"
+	return 1
+}
+
+# 解封：从三个封锁集合里删掉（all = 全部解封）。之后它再来，达到阈值还会被封
+unblock() {
+	local ip=$1 s
+	for s in corpline_blk_scan corpline_blk_brute corpline_blk_flood; do
+		if [ "$ip" = "all" ]; then
+			ipset flush $s 2>/dev/null
+		else
+			ipset -q del $s "$ip"
+		fi
+	done
+	say "安全防护：已解封 $ip"
+}
+
 do_notify() {
 	local text="公司专线：$1" u="$corpline_notify_url"
 	[ "${corpline_notify:-off}" = "off" ] && return 0
@@ -582,6 +652,10 @@ notify)
 	do_notify "$2"
 	exit 0
 	;;
+update_bad)
+	update_bad
+	exit 0
+	;;
 update_cn)
 	# 每周更新：名单换了才需要让守护程序重新加载（凌晨执行，重启只有几秒直连）
 	if update_cn && [ -n "$(daemon_pid)" ]; then
@@ -622,11 +696,31 @@ case $2 in
 	unlock
 	;;
 4)
-	# 只保存：dbus 已由软件中心写好，这里只处理密码与锁定设备，不重启线路
+	# 只保存：dbus 已由软件中心写好，这里只处理密码与锁定设备，不重启线路。
+	# 配置文件照样重新生成：安全防护白名单、设备名字由守护程序自己读取更新
 	http_response "$1"
 	save_password
 	load_settings
 	save_admin_device
+	load_settings
+	[ -n "$(daemon_pid)" ] && gen_conf
+	;;
+7)
+	# 解封：网页先把 IP 写进 corpline_sec_unblock 再调用
+	ip=$(dbus get corpline_sec_unblock)
+	dbus remove corpline_sec_unblock
+	case "$ip" in
+	all) unblock all ;;
+	*[!0-9.]* | "") ;;
+	*) unblock "$ip" ;;
+	esac
+	http_response "$1"
+	;;
+8)
+	# 网页「立即更新」恶意地址名单
+	dbus set corpline_bad_state=downloading
+	http_response "$1"
+	/bin/sh $KSROOT/scripts/corpline_config.sh update_bad >/dev/null 2>&1 &
 	;;
 5)
 	# 发一条测试通知（用刚保存的通知设置）

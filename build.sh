@@ -21,6 +21,16 @@ done
 rm -f $L.tmp
 [ -f $L ] && [ "$(wc -l <$L)" -ge 50000 ] || { echo "中国服务名单下载失败，且没有可用的旧名单"; exit 1; }
 echo "中国服务名单 $(wc -l <$L) 条"
+# 公开的恶意 IP 名单（安全防护用，路由器之后每周自动更新）
+B=$P/configs/bad-ips.netset
+for u in https://cdn.jsdelivr.net/gh/firehol/blocklist-ipsets@master/firehol_level1.netset \
+	https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_level1.netset; do
+	curl -fsSL -m 120 "$u" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$' >$B.tmp || true
+	[ "$(wc -l <$B.tmp)" -ge 1000 ] && mv -f $B.tmp $B && break
+done
+rm -f $B.tmp
+[ -f $B ] && [ "$(wc -l <$B)" -ge 1000 ] || { echo "恶意地址名单下载失败，且没有可用的旧名单"; exit 1; }
+echo "恶意地址名单 $(wc -l <$B) 条"
 rm -f corpline.tar.gz
 tar -C plugin --exclude='.DS_Store' --exclude='icon-corpline-b.png' -czf corpline.tar.gz corpline
 ls -la corpline.tar.gz

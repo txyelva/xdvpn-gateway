@@ -17,6 +17,7 @@ p=$(cat $RUN/openconnect.pid 2>/dev/null)
 [ -x /koolshare/bin/corpline ] && /koolshare/bin/corpline cleanup -c $RUN/corpline.conf >/dev/null 2>&1
 cru d corpline_ensure >/dev/null 2>&1
 cru d corpline_cnlist >/dev/null 2>&1
+cru d corpline_badlist >/dev/null 2>&1
 if [ -f /jffs/configs/dnsmasq.d/corpline.conf ]; then
 	rm -f /jffs/configs/dnsmasq.d/corpline.conf
 	service restart_dnsmasq >/dev/null 2>&1
@@ -27,7 +28,7 @@ rm -f /koolshare/init.d/S96corpline.sh /koolshare/init.d/N96corpline.sh
 rm -f /koolshare/bin/corpline /koolshare/scripts/corpline_config.sh
 rm -f /koolshare/webs/Module_corpline.asp /koolshare/res/icon-corpline.png /koolshare/res/corpline-bg.png
 rm -rf /koolshare/configs/corpline $RUN /var/lock/corpline.lock
-rm -f /tmp/upload/corpline_status.json /tmp/upload/corpline_domains.json /tmp/upload/corpline_log.txt /tmp/upload/corpline_log.txt.1
+rm -f /tmp/upload/corpline_status.json /tmp/upload/corpline_domains.json /tmp/upload/corpline_security.json /tmp/upload/corpline_log.txt /tmp/upload/corpline_log.txt.1
 
 echo_date "清理设置…"
 for v in $(dbus list corpline_ | cut -d= -f1); do dbus remove $v; done

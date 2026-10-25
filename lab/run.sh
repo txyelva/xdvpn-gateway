@@ -587,7 +587,151 @@ scenario_device_ports() {
 	check "取消后从端口 3987 发出的连接" "$(lan1 curl -s -m4 --local-port 3987 http://100.64.2.80/ | awk '{print $2}')" 100.64.1.10
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports resources nasty upgrade bootloop disable_uninstall"
+# 安全防护：外网"攻击者"在 wan 里用几个独立地址；阈值调低、检查间隔 2 秒，几秒内就能看到结果
+SEC=/tmp/upload/corpline_security.json
+sec_json() { jq -r "$1" $SEC 2>/dev/null; }
+sec_wait() { # sec_wait <jq 条件> <最多秒数>
+	local i=0
+	while [ $i -lt ${2:-15} ]; do
+		[ "$(sec_json "$1")" = true ] && return 0
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+# 从外网地址 $1 连路由器公网地址的端口 $2…；输出最后一次是否连上
+knock() {
+	local from=$1 r=fail p
+	shift
+	for p in "$@"; do
+		wan curl -s -m 1 --interface $from -o /dev/null http://100.64.0.2:$p/ 2>/dev/null && r=ok || r=fail
+	done
+	echo $r
+}
+scenario_security() {
+	CASE="安全防护"
+	fresh_active
+	local L=/koolshare/configs/corpline/lab.conf B=/koolshare/configs/corpline/bad-ips.netset keep_dev=$(/koolshare/bin/dbus get corpline_devices) a p m
+	cp $L $S/lab.conf.bak
+	cp $B $S/bad.bak 2>/dev/null
+	# 真实名单里有 100.64.0.0/10（运营商保留网段）：沙盒的"外网"正好用它，去掉（真机上它默认被当作私有网段剔除）
+	grep -v '^100\.' $S/bad.bak >$B
+	printf '%s\n' sec_scan_per_min=5 sec_brute_per_min=5 sec_flood_per_min=10 sec_out_scan_per_min=5 sec_out_flood_per_min=10 sec_poll_secs=2 \
+		sec_private_nets=10.0.0.0/8,127.0.0.0/8,172.16.0.0/12,192.168.0.0/16,224.0.0.0/3 >>$L
+	for a in 1 2 3 4 5; do wan ip addr add 100.64.3.$a/32 dev dummy0 2>/dev/null; done
+	# 家里一台设备开着端口转发（8080 = 管理类端口，9000 = 普通服务）
+	for p in 8080 9000; do
+		# 不用 http.server 命令行：它启动时先反查主机名，沙盒里要等 DNS 超时，端口迟迟不开
+		lan1 python3 -I -c "import socketserver as s, http.server as h; s.TCPServer.allow_reuse_address = True; s.TCPServer(('', $p), h.SimpleHTTPRequestHandler).serve_forever()" </dev/null >/dev/null 2>&1 &
+		rt iptables -t nat -I PREROUTING -i eth0 -p tcp --dport $p -j DNAT --to-destination 192.168.50.100:$p
+	done
+	rt iptables -I FORWARD -i eth0 -m conntrack --ctstate DNAT -j ACCEPT
+	dbset corpline_devices=$(printf '02:00:00:00:01:00\t测试电脑\t0\tcorp\t\n' | base64 -w0)
+	dbset corpline_notify=feishu
+	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/ok
+	: >$S/hook.log
+	api 1
+	wait_state active 60 >/dev/null
+	# 上一轮演练封过的地址会跨守护程序重启保留：先全部解封
+	dbset corpline_sec_unblock=all
+	api 7
+	sleep 2
+	sec_wait '.active' 10 && ok "防护已生效（外网网卡 $(sec_json .wan)）" || bad "防护没有生效：$(sec_json .error)"
+	check "外来与外连的跳转都在" "$(rt iptables -S | grep -c -- '-j CORPLINE_SEC\(OUT\)\?$')" 3
+	check "恶意地址名单装入条数 > 1000" "$([ "$(sec_json .stats.bad_count)" -gt 1000 ] && echo yes)" yes
+	check "正常访问端口转发" "$(knock 100.64.3.2 9000)" ok
+
+	# 1. 扫描路由器的端口
+	knock 100.64.3.1 $(seq 1001 1012) >/dev/null
+	sec_wait '[.blocked[] | select(.ip=="100.64.3.1" and .kind=="scan")] | length == 1' 10 && ok "扫描者被封锁" || bad "扫描者没有被封锁"
+	check "封锁后它连端口转发也不通" "$(knock 100.64.3.1 9000)" fail
+	check "别的外网地址不受影响" "$(knock 100.64.3.2 9000)" ok
+	m=$(sec_json '[.events[] | select(.ip=="100.64.3.1")][0].m')
+	echo "$m" | grep -q '扫描路由器的端口（端口 10' && ok "事件写明了扫描的端口：$m" || bad "扫描事件内容：$m"
+	check "一般扫描不推送" "$(grep -c '100.64.3.1' $S/hook.log)" 0
+
+	# 2. 反复连家里设备的管理端口（像猜密码）
+	knock 100.64.3.2 $(for i in $(seq 14); do echo 8080; done) >/dev/null
+	sec_wait '[.blocked[] | select(.ip=="100.64.3.2" and .kind=="brute")] | length == 1' 10 && ok "猜密码的被封锁" || bad "猜密码的没有被封锁"
+	m=$(sec_json '[.events[] | select(.ip=="100.64.3.2")][0]')
+	echo "$m" | jq -r .m | grep -q '「测试电脑」（192.168.50.100）的管理端口（端口 8080）' && ok "事件写明了设备名和端口：$(echo "$m" | jq -r .m)" || bad "猜密码事件：$m"
+	check "猜密码属于要马上提醒的" "$(echo "$m" | jq -r .level)" alert
+	sleep 2
+	grep -q '安全提醒：外网 100.64.3.2' $S/hook.log && ok "已推送到飞书" || bad "没有推送：$(tail -c 300 $S/hook.log)"
+
+	# 3. 短时间大量连接普通服务
+	knock 100.64.3.3 $(for i in $(seq 25); do echo 9000; done) >/dev/null
+	sec_wait '[.blocked[] | select(.ip=="100.64.3.3" and .kind=="flood")] | length == 1' 10 && ok "狂连的被封锁" || bad "狂连的没有被封锁"
+
+	# 4. 恶意地址名单：外来的直接丢，家里设备连它只提醒
+	printf '100.64.3.4\n100.64.2.81/32\n10.0.0.0/8\n' >>$B
+	sleep 4
+	check "名单里的外网地址连不进来" "$(knock 100.64.3.4 9000)" fail
+	check "名单里的私有网段被去掉" "$(rt ipset test corpline_bad 10.1.1.1 2>&1 | grep -c 'is in set')" 0
+	check "家里设备仍能访问名单里的地址（只提醒不拦）" "$(lan1 curl -s -m4 http://100.64.2.81/ | awk '{print $2}')" 100.64.1.10
+	sec_wait '[.events[] | select(.kind=="out_bad" and .ip=="192.168.50.100")] | length == 1' 10 && ok "家里设备连恶意地址：$(sec_json '[.events[] | select(.kind=="out_bad")][0].m')" || bad "家里设备连恶意地址没有提醒"
+
+	# 5. 家里设备反复连同一台服务器的同一个高危端口（像 git / SSH）不算扫描；短时间连很多不同的高危端口才提醒
+	for i in $(seq 15); do lan1 curl -s -m 1 -o /dev/null http://100.64.2.80:22/ 2>/dev/null; done
+	sleep 4
+	check "反复连同一台服务器的 22 端口不算扫描" "$(sec_json '[.events[] | select(.kind=="out_scan" and .ip=="192.168.50.100")] | length')" 0
+	for p in 22 23 445 3389 3306 6379 1433 5555; do lan2 curl -s -m 1 -o /dev/null http://100.64.2.80:$p/ 2>/dev/null; done
+	sec_wait '[.events[] | select(.kind=="out_scan" and .ip=="192.168.50.101")] | length == 1' 10 && ok "家里设备扫描外网：$(sec_json '[.events[] | select(.kind=="out_scan")][0].m')" || bad "家里设备扫描外网没有提醒"
+	check "提醒后家里设备照常上网" "$(path lan2 100.64.2.80)" tunnel
+
+	# 6. 家里设备狂连同一个外网地址
+	for i in $(seq 25); do lan2 curl -s -m 1 -o /dev/null http://100.64.2.80/ 2>/dev/null; done
+	sec_wait '[.events[] | select(.kind=="out_flood" and .ip=="192.168.50.101")] | length == 1' 10 && ok "家里设备狂连：$(sec_json '[.events[] | select(.kind=="out_flood")][0].m')" || bad "家里设备狂连没有提醒"
+
+	# 7. 重启守护程序：封锁保留、不重复出事件
+	local n0=$(sec_json '.events | length')
+	api 1
+	wait_state active 60 >/dev/null
+	sleep 4
+	check "重启后扫描者仍被封锁" "$(knock 100.64.3.1 9000)" fail
+	check "重启后事件没有重复" "$(sec_json '.events | length')" "$n0"
+	check "重启后封锁名单" "$(sec_json '[.blocked[].ip] | sort | join(",")')" "100.64.3.1,100.64.3.2,100.64.3.3"
+
+	# 8. 网页解封 / 白名单（白名单不用重启）
+	dbset corpline_sec_unblock=100.64.3.1
+	api 7
+	check "解封后能连进来" "$(knock 100.64.3.1 9000)" ok
+	local p0=$(cl_pid)
+	dbset corpline_sec_allow=100.64.3.3
+	api 4
+	sleep 4
+	check "加白名单后能连进来" "$(knock 100.64.3.3 9000)" ok
+	check "改白名单没有重启守护程序" "$(cl_pid)" "$p0"
+	dbset 'corpline_sec_unblock=1.2.3.4;touch /tmp/pwned8'
+	api 7
+	check "解封参数不会被当命令执行" "$(ls /tmp/pwned8 2>/dev/null | wc -l)" 0
+
+	# 9. 关闭防护：规则全部撤掉，公司线路不受影响
+	dbset corpline_sec_enable=0
+	api 1
+	wait_state active 60 >/dev/null
+	check "关闭后防护规则" "$(rt iptables-save | grep -c CORPLINE_SEC)" 0
+	check "关闭后防护集合" "$(rt ipset list -n | grep -c 'corpline_\(blk\|al\|bad\|sec\)')" 0
+	check "关闭后被封过的地址能连进来" "$(knock 100.64.3.2 9000)" ok
+	check "关闭后线路" "$(path lan1 100.64.2.80)" tunnel
+
+	# 收尾
+	dbset corpline_sec_enable=1
+	dbset corpline_sec_allow=
+	dbset corpline_devices=$keep_dev
+	dbset corpline_notify=off
+	dbset corpline_notify_url=
+	cp $S/lab.conf.bak $L
+	[ -f $S/bad.bak ] && cp $S/bad.bak $B
+	for p in 8080 9000; do rt iptables -t nat -D PREROUTING -i eth0 -p tcp --dport $p -j DNAT --to-destination 192.168.50.100:$p; done
+	rt iptables -D FORWARD -i eth0 -m conntrack --ctstate DNAT -j ACCEPT
+	pkill -f "TCPServer\(\('', (8080|9000)\)"
+	for a in 1 2 3 4 5; do wan ip addr del 100.64.3.$a/32 dev dummy0 2>/dev/null; done
+	api 1
+	wait_state active 60 >/dev/null
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports security resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

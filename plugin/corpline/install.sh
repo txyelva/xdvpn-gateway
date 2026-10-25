@@ -47,6 +47,21 @@ install_cn() {
 	fi
 }
 
+# 安装包自带的恶意地址名单：同样只在路由器上没有、或安装包里的更新时换上
+install_bad() {
+	local src=$DIR/configs/bad-ips.netset dst=/koolshare/configs/corpline/bad-ips.netset bt ct
+	[ -s $src ] || return 0
+	bt=$(date -r $src +%s 2>/dev/null)
+	ct=$(dbus get corpline_bad_time)
+	if [ ! -s $dst ] || [ "${bt:-0}" -gt "${ct:-0}" ]; then
+		put $src $dst 644
+		dbus set corpline_bad_count=$(wc -l <$dst)
+		dbus set corpline_bad_time=$bt
+		dbus set corpline_bad_state=ok
+		dbus remove corpline_bad_error
+	fi
+}
+
 install_now() {
 	if [ -f /koolshare/scripts/corpline_config.sh ]; then
 		echo_date "检测到旧版本，先停止运行中的服务…"
@@ -60,6 +75,7 @@ install_now() {
 	put $DIR/res/icon-corpline.png /koolshare/res/icon-corpline.png 644
 	[ -f $DIR/res/corpline-bg.png ] && put $DIR/res/corpline-bg.png /koolshare/res/corpline-bg.png 644
 	install_cn
+	install_bad
 	put $DIR/uninstall.sh /koolshare/scripts/uninstall_corpline.sh 755
 
 	# 默认值只在第一次安装时写：之后用户清空的项（例如"走海外 DNS 的域名"）升级时不会被填回去

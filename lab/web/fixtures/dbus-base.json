@@ -15,5 +15,9 @@
   "corpline_version": "0.1.0",
   "corpline_admin_ip": "192.168.50.198",
   "corpline_has_password": "1",
-  "corpline_direct_domains": "finder.video.qq.com"
+  "corpline_direct_domains": "finder.video.qq.com",
+  "corpline_bad_state": "ok",
+  "corpline_bad_count": "4630",
+  "corpline_bad_time": "-259200",
+  "corpline_sec_allow": "203.0.113.0/24"
 }

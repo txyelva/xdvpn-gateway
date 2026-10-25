@@ -19,6 +19,24 @@ const CH_MSS: &str = "CORPLINE_MSS";
 const CH_GUARD: &str = "CORPLINE_GUARD";
 const CH_V6: &str = "CORPLINE6";
 
+// 安全防护（filter 表）：外来新连接进 CORPLINE_SEC，家里设备的新外连进 CORPLINE_SECOUT
+pub const SET_BLK: [&str; 3] = ["corpline_blk_scan", "corpline_blk_brute", "corpline_blk_flood"];
+pub const SET_AL: [&str; 3] = ["corpline_al_bad", "corpline_al_scan", "corpline_al_flood"];
+pub const SET_BAD: &str = "corpline_bad";
+pub const SET_OK: &str = "corpline_secok";
+pub const SET_HIT: &str = "corpline_sechit";
+const SET_PRIV: &str = "corpline_secpriv";
+const SET_ADM: &str = "corpline_secadm";
+const SET_RISK: &str = "corpline_secrisk";
+// 家里设备最近 1 分钟连过的（外网地址, 高危端口）：只数"新目标"，反复连同一台服务器（git、SSH）不算扫描
+const SET_ODST: &str = "corpline_secodst";
+const CH_SEC: &str = "CORPLINE_SEC";
+const CH_SECOUT: &str = "CORPLINE_SECOUT";
+const CH_SECDROP: &str = "CORPLINE_SECDROP";
+const CH_ODST: &str = "CORPLINE_O_NEWDST";
+const CH_BLK: [&str; 3] = ["CORPLINE_B_SCAN", "CORPLINE_B_BRUTE", "CORPLINE_B_FLOOD"];
+const CH_AL: [&str; 3] = ["CORPLINE_A_BAD", "CORPLINE_A_SCAN", "CORPLINE_A_FLOOD"];
+
 /// 执行 iptables / ip6tables；固件的 iptables 没有 -w，遇到 xtables 锁冲突稍等重试
 fn xt(bin: &str, args: &[&str]) -> bool {
     for _ in 0..5 {
@@ -167,7 +185,242 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
         run_ok("ip6tables", &["-t", "filter", "-A", CH_V6, "-i", lan, "!", "-o", lan, "-j", "REJECT", "--reject-with", "icmp6-adm-prohibited"]);
         ensure_jump("ip6tables", "filter", "FORWARD", &["-j", CH_V6]);
     }
+    // 安全防护出问题不影响公司线路：记下原因，线路照常
+    if let Err(e) = apply_sec(cfg) {
+        crate::report::log(&format!("安全防护没有生效：{}", e));
+    }
     Ok(())
+}
+
+/// 外网网卡：配置里写了就用，否则看主路由表默认路由走哪张网卡（PPPoE 拨号是 ppp0）
+pub fn wan_if(cfg: &Config) -> Option<String> {
+    if !cfg.sec.wan_if.is_empty() {
+        return Some(cfg.sec.wan_if.clone());
+    }
+    let (_, out) = run("ip", &["-4", "route", "show", "table", "main", "default"]);
+    let mut it = out.split_whitespace();
+    while let Some(w) = it.next() {
+        if w == "dev" {
+            return it.next().filter(|d| *d != cfg.tun_if).map(String::from);
+        }
+    }
+    None
+}
+
+/// 建集合；固件的 ipset 不支持 counters 时退回不带计数
+fn create_set(name: &str, spec: &[&str]) -> bool {
+    let mut a = vec!["-exist", "create", name];
+    a.extend_from_slice(spec);
+    if run_ok("ipset", &a) {
+        return true;
+    }
+    let plain: Vec<&str> = a.iter().copied().filter(|x| *x != "counters").collect();
+    plain.len() != a.len() && run_ok("ipset", &plain)
+}
+
+/// 把内容整体换成 items（先写临时集合再 swap，不出现空窗）
+fn replace_set(name: &str, kind: &str, opts: &str, items: &[String]) -> bool {
+    let tmp = format!("{}_t", name);
+    let mut s = format!("create {} {} {} -exist\nflush {}\n", tmp, kind, opts, tmp);
+    for i in items {
+        s.push_str(&format!("add {} {}\n", tmp, i));
+    }
+    s.push_str(&format!("swap {} {}\ndestroy {}\n", tmp, name, tmp));
+    run_stdin("ipset", &["restore", "-!"], &s)
+}
+
+fn sec_save_file(cfg: &Config) -> std::path::PathBuf {
+    cfg.run_dir.join("sec-blocks.save")
+}
+
+fn sec_create_sets(cfg: &Config) -> bool {
+    let t = cfg.sec.block_secs.to_string();
+    let mut ok = true;
+    for s in SET_BLK {
+        ok &= create_set(s, &["hash:ip", "family", "inet", "timeout", &t, "maxelem", "65536", "counters"]);
+    }
+    for s in SET_AL {
+        ok &= create_set(s, &["hash:ip", "family", "inet", "timeout", "3600", "maxelem", "1024"]);
+    }
+    ok &= create_set(SET_HIT, &["hash:ip,port,ip", "family", "inet", "timeout", "3600", "maxelem", "16384"]);
+    ok &= create_set(SET_BAD, &["hash:net", "family", "inet", "maxelem", "131072"]);
+    ok &= create_set(SET_OK, &["hash:net", "family", "inet", "maxelem", "1024"]);
+    ok &= create_set(SET_PRIV, &["hash:net", "family", "inet", "maxelem", "256"]);
+    ok &= create_set(SET_ADM, &["bitmap:port", "range", "0-65535"]);
+    ok &= create_set(SET_RISK, &["bitmap:port", "range", "0-65535"]);
+    ok &= create_set(SET_ODST, &["hash:ip,port,ip", "family", "inet", "timeout", "60", "maxelem", "65536"]);
+    if !ok {
+        return false;
+    }
+    set_allow(&cfg.sec.allow);
+    replace_set(SET_PRIV, "hash:net", "family inet maxelem 256", &cfg.sec.private_nets);
+    let p = |v: &[u16]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    replace_set(SET_ADM, "bitmap:port", "range 0-65535", &p(&cfg.sec.admin_ports));
+    replace_set(SET_RISK, "bitmap:port", "range 0-65535", &p(&cfg.sec.risky_ports));
+    // 守护程序重启前保存的封锁名单（剩余时间照旧），重启路由器后自然清空
+    if let Ok(saved) = std::fs::read_to_string(sec_save_file(cfg)) {
+        let adds: String = saved.lines().filter(|l| l.starts_with("add ")).map(|l| format!("{}\n", l)).collect();
+        run_stdin("ipset", &["restore", "-!"], &adds);
+        let _ = std::fs::remove_file(sec_save_file(cfg));
+    }
+    true
+}
+
+pub fn set_allow(nets: &[String]) -> bool {
+    replace_set(SET_OK, "hash:net", "family inet maxelem 1024", nets)
+}
+
+pub fn set_bad(nets: &[String]) -> bool {
+    replace_set(SET_BAD, "hash:net", "family inet maxelem 131072", nets)
+}
+
+/// 安全防护的 filter 规则（一次 iptables-restore 原子写入）。只加"丢弃"和"记录"，从不放行，
+/// 所以不会绕过固件自己的防火墙；外网扫描/猜密码/狂连只看 TCP 握手包，游戏和 BT 的 UDP 不计数。
+fn sec_rules(cfg: &Config) -> String {
+    let c = &cfg.sec;
+    let mut r = String::from("*filter\n");
+    for ch in [CH_SEC, CH_SECOUT, CH_SECDROP, CH_ODST].iter().chain(CH_BLK.iter()).chain(CH_AL.iter()) {
+        r.push_str(&format!(":{} - [0:0]\n", ch));
+    }
+    let a = |r: &mut String, ch: &str, rule: String| r.push_str(&format!("-A {} {}\n", ch, rule));
+    let hl = |name: &str, per_min: u32, mode: &str| {
+        format!(
+            "-m hashlimit --hashlimit-above {n}/min --hashlimit-burst {n} --hashlimit-mode {mode} --hashlimit-name {name} --hashlimit-htable-expire 120000 --hashlimit-htable-max 16384",
+            n = per_min.min(10000),
+            mode = mode,
+            name = name
+        )
+    };
+    // 被封的地址：记下它碰了哪个端口，然后丢弃
+    a(&mut r, CH_SECDROP, format!("-j SET --add-set {} src,dst,dst", SET_HIT));
+    a(&mut r, CH_SECDROP, "-j DROP".into());
+    for (ch, set) in CH_BLK.iter().zip(SET_BLK) {
+        a(&mut r, ch, format!("-j SET --add-set {} src", set));
+        a(&mut r, ch, format!("-j {}", CH_SECDROP));
+    }
+    for (ch, set) in CH_AL.iter().zip(SET_AL) {
+        a(&mut r, ch, format!("-j SET --add-set {} src", set));
+        a(&mut r, ch, format!("-j SET --add-set {} src,dst,dst", SET_HIT));
+    }
+
+    // 外来
+    a(&mut r, CH_SEC, format!("-m set --match-set {} src -j RETURN", SET_OK));
+    for set in SET_BLK {
+        a(&mut r, CH_SEC, format!("-m set --match-set {} src -j {}", set, CH_SECDROP));
+    }
+    a(&mut r, CH_SEC, format!("-m set --match-set {} src -j DROP", SET_BAD));
+    // 连路由器自己（外网管理已关，主动连进来的都是扫描）
+    a(&mut r, CH_SEC, format!("-p tcp --syn -m addrtype --dst-type LOCAL {} -j {}", hl("corpline_scan", c.scan_per_min, "srcip"), CH_BLK[0]));
+    a(&mut r, CH_SEC, "-m addrtype --dst-type LOCAL -j RETURN".into());
+    // 经端口转发连家里设备：管理端口按猜密码算，其余按狂连算
+    a(&mut r, CH_SEC, format!("-p tcp --syn -m set --match-set {} dst {} -j {}", SET_ADM, hl("corpline_brute", c.brute_per_min, "srcip"), CH_BLK[1]));
+    a(&mut r, CH_SEC, format!("-p tcp --syn {} -j {}", hl("corpline_flood", c.flood_per_min, "srcip"), CH_BLK[2]));
+
+    // 家里设备往外：只记录、提醒，不拦
+    a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j RETURN", SET_PRIV));
+    a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j RETURN", SET_OK));
+    a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j {}", SET_BAD, CH_AL[0]));
+    // 扫描外网：1 分钟内连了很多个不同的（地址, 高危端口）；同一目标重复连接不计数
+    a(&mut r, CH_SECOUT, format!("-p tcp --syn -m set --match-set {} dst -m set ! --match-set {} src,dst,dst -j {}", SET_RISK, SET_ODST, CH_ODST));
+    a(&mut r, CH_ODST, format!("-j SET --add-set {} src,dst,dst", SET_ODST));
+    a(&mut r, CH_ODST, format!("{} -j {}", hl("corpline_oscan", c.out_scan_per_min, "srcip"), CH_AL[1]));
+    a(&mut r, CH_SECOUT, format!("-p tcp --syn {} -j {}", hl("corpline_oflood", c.out_flood_per_min, "srcip,dstip"), CH_AL[2]));
+    a(&mut r, CH_SECOUT, format!("-p udp -m multiport ! --dports 53,123,443,853 {} -j {}", hl("corpline_oudp", c.out_flood_per_min, "srcip,dstip"), CH_AL[2]));
+    r.push_str("COMMIT\n");
+    r
+}
+
+fn sec_jumps(cfg: &Config, wan: &str) -> Vec<(&'static str, Vec<String>)> {
+    let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    vec![
+        ("INPUT", v(&["-i", wan, "-m", "state", "--state", "NEW", "-j", CH_SEC])),
+        ("FORWARD", v(&["-i", wan, "-m", "state", "--state", "NEW", "-j", CH_SEC])),
+        ("FORWARD", v(&["-i", &cfg.lan_if, "!", "-o", &cfg.lan_if, "-m", "state", "--state", "NEW", "-j", CH_SECOUT])),
+    ]
+}
+
+/// 外网网卡变了（例如从 ppp0 换成 eth0）时，旧的跳转要先摘掉
+fn sec_drop_jumps() {
+    for builtin in ["INPUT", "FORWARD"] {
+        let (_, out) = run("iptables", &["-t", "filter", "-S", builtin]);
+        for l in out.lines() {
+            if l.ends_with(&format!("-j {}", CH_SEC)) || l.ends_with(&format!("-j {}", CH_SECOUT)) {
+                let spec: Vec<&str> = l.split_whitespace().skip(2).collect();
+                drop_jump("iptables", "filter", builtin, &spec);
+            }
+        }
+    }
+}
+
+/// 上次建安全防护规则失败的原因（网页上显示）
+pub static SEC_ERR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn apply_sec(cfg: &Config) -> Result<(), String> {
+    let r = apply_sec_inner(cfg);
+    *SEC_ERR.lock().unwrap() = r.as_ref().err().cloned();
+    r
+}
+
+fn apply_sec_inner(cfg: &Config) -> Result<(), String> {
+    if !cfg.sec.enable {
+        return Ok(());
+    }
+    let wan = wan_if(cfg).ok_or("找不到外网网卡（宽带没连上？）")?;
+    if !sec_create_sets(cfg) {
+        return Err("创建安全防护用的 ipset 失败".into());
+    }
+    if !run_stdin("iptables-restore", &["--noflush"], &sec_rules(cfg)) {
+        return Err("写入安全防护规则失败（固件缺少 hashlimit 模块？）".into());
+    }
+    let have: Vec<String> = sec_jumps(cfg, &wan).iter().map(|(b, s)| format!("-A {} {}", b, s.join(" "))).collect();
+    let (_, cur) = run("iptables", &["-t", "filter", "-S"]);
+    let stale = cur.lines().any(|l| (l.ends_with(&format!("-j {}", CH_SEC)) || l.ends_with(&format!("-j {}", CH_SECOUT))) && !have.iter().any(|h| h == l));
+    if stale {
+        sec_drop_jumps();
+    }
+    for (b, spec) in sec_jumps(cfg, &wan) {
+        let spec: Vec<&str> = spec.iter().map(String::as_str).collect();
+        ensure_jump("iptables", "filter", b, &spec);
+    }
+    Ok(())
+}
+
+pub fn sec_present(cfg: &Config) -> bool {
+    if !cfg.sec.enable {
+        return true;
+    }
+    let Some(wan) = wan_if(cfg) else { return true };
+    sec_jumps(cfg, &wan).iter().all(|(b, spec)| {
+        let mut a = vec!["-t", "filter", "-C", b];
+        a.extend(spec.iter().map(String::as_str));
+        run_ok("iptables", &a)
+    })
+}
+
+fn sec_cleanup(cfg: &Config) {
+    sec_drop_jumps();
+    for ch in [CH_SEC, CH_SECOUT, CH_ODST].iter().chain(CH_BLK.iter()).chain(CH_AL.iter()).chain([CH_SECDROP].iter()) {
+        xt("iptables", &["-t", "filter", "-F", ch]);
+    }
+    for ch in [CH_SEC, CH_SECOUT, CH_ODST].iter().chain(CH_BLK.iter()).chain(CH_AL.iter()).chain([CH_SECDROP].iter()) {
+        xt("iptables", &["-t", "filter", "-X", ch]);
+    }
+    // 封锁名单留给下次启动（只在内存盘，重启路由器即清空）
+    let mut save = String::new();
+    for s in SET_BLK {
+        let (ok, out) = run("ipset", &["save", s]);
+        if ok {
+            save.push_str(&out);
+        }
+    }
+    if save.contains("\nadd ") || save.starts_with("add ") {
+        let _ = std::fs::create_dir_all(&cfg.run_dir);
+        let _ = sys::write_atomic(&sec_save_file(cfg), save.as_bytes());
+    }
+    for s in SET_BLK.iter().chain(SET_AL.iter()).chain([SET_HIT, SET_BAD, SET_OK, SET_PRIV, SET_ADM, SET_RISK, SET_ODST].iter()) {
+        run_ok("ipset", &["destroy", s]);
+        run_ok("ipset", &["destroy", &format!("{}_t", s)]);
+    }
 }
 
 /// 防火墙规则是否还在（固件重建防火墙会清掉它们；只重建 filter 或 IPv6 的情况也要发现）
@@ -181,6 +434,7 @@ pub fn fw_present(cfg: &Config) -> bool {
         && run_ok("iptables", &["-t", "filter", "-C", "INPUT", "-j", CH_GUARD])
         && run_ok("iptables", &["-t", "filter", "-C", "FORWARD", "-j", CH_GUARD])
         && v6
+        && sec_present(cfg)
 }
 
 /// 两条 ip rule 是否都在（丢了的话页面显示公司专线、流量却在直连）
@@ -338,6 +592,7 @@ pub fn cleanup(cfg: &Config) {
     drop_chain("iptables", "mangle", CH_MSS);
     drop_chain("iptables", "nat", CH_NAT);
     drop_chain("iptables", "filter", CH_GUARD);
+    sec_cleanup(cfg);
     if xt("ip6tables", &["-t", "filter", "-L", "FORWARD", "-n"]) {
         drop_jump("ip6tables", "filter", "FORWARD", &["-j", CH_V6]);
         drop_chain("ip6tables", "filter", CH_V6);

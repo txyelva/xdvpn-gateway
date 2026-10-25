@@ -12,6 +12,8 @@
     js=脚本                                                              加载 2.5 秒后执行，结果写到 <html data-js>（配合 --dump-dom）
     noclients=1                                                          模拟读不到在线设备列表
     /_temp/corpline_domains.json                                         最近访问的网站（fixtures/domains.json；插件没运行时 404）
+    sec=busy|quiet|error|starting                                        安全防护：有封锁和记录 / 什么都没发生 / 没生效 / 刚启动
+    /_temp/corpline_security.json                                        安全防护状态（fixtures/security.json；插件没运行时是关闭后的样子）
     net=login|down                                                       模拟登录过期（状态和 dbus 回登录页）/ 路由器连不上（503）
     /_lab/net?m=ok|login|down                                            页面开着时切换上面的模拟
     /_lab/slow?post=秒&status=秒                                          让 POST /_api/ 或状态文件晚回复（测请求进行中的界面）
@@ -21,6 +23,7 @@
   [1] 应用 / [3] 重新启用：旧进程的状态再保留 3 秒（模拟重启耗时），然后新进程（新的 started）
       正在连接 8 秒 → 正在使用公司专线；关闭 → 已关闭（关闭记录里没有 started）
   [0] 关闭：同时清掉 corpline_paused        [2] 立即重试：不换进程，started 不变
+  [7] 解封（corpline_sec_unblock=IP 或 all）   [8] 更新恶意地址名单（6 秒后完成）
   [4] 只保存，不改状态     [5] 测试通知：通知关闭或没地址回 nourl，地址里含 "fail" 回 fail
   [1]/[4] 保存过密码 → corpline_has_password=1；按 admin_ip 查 MAC（用客户端列表代替 /proc/net/arp），
           没有就在设备列表最前加一行锁定的「管理这台路由器的电脑」。
@@ -47,7 +50,8 @@ RESTART_DELAY = 3
 LOGIN_HTML = '<html><head><script>top.location.href="/Main_Login.asp";</script></head><body></body></html>'
 
 STATE = {"name": "active", "dbus": {}, "sim": None, "noclients": False, "net": "ok",
-         "slow_post": 0, "slow_status": 0, "patch": {}}
+         "slow_post": 0, "slow_status": 0, "patch": {},
+         "sec": "busy", "unblocked": set()}
 
 
 def load_fixture(name):
@@ -66,6 +70,9 @@ def reset(name):
     db.update(fx["dbus"])
     db["corpline_devices"] = encode_devices(db.pop("corpline_devices_lines", []))
     db = {k: v for k, v in db.items() if v != ""}
+    for k in ("corpline_bad_time",):
+        if db.get(k, "").startswith("-"):
+            db[k] = str(int(time.time()) + int(db[k]))
     STATE.update(name=name, dbus=db, sim=None, slow_post=0, slow_status=0, patch={}, t0=int(time.time()))
 
 
@@ -134,6 +141,35 @@ def current_domains():
     return absolutize(fx, int(time.time()))
 
 
+def current_security():
+    """安全防护状态：时间字段是相对现在的秒数；插件没在运行时守护程序退出前写的是 active=false。"""
+    now = int(time.time())
+    s = current_status()
+    with open(os.path.join(FIX, "security.json"), encoding="utf-8") as f:
+        fx = json.load(f)
+    kind = STATE["sec"]
+    for b in fx["blocked"]:
+        b["since"] += now
+        b["expires"] += now
+    for e in fx["events"]:
+        e["t"] += now
+    fx["updated"] = now
+    fx["enable"] = STATE["dbus"].get("corpline_sec_enable") != "0"
+    fx["block_hours"] = int(STATE["dbus"].get("corpline_sec_block_hours") or 24)
+    if kind == "quiet":
+        fx.update(blocked=[], watch=[], events=[])
+        fx["stats"].update(blocked=0, blocks_today=0, alerts_today=0, dropped=0)
+    elif kind == "error":
+        fx.update(active=False, error="路由器的防火墙不支持按次数计数（缺少 hashlimit）", blocked=[], watch=[])
+    elif kind == "starting":
+        fx.update(active=False)
+    fx["blocked"] = [b for b in fx["blocked"] if b["ip"] not in STATE["unblocked"]]
+    fx["stats"]["blocked"] = len(fx["blocked"])
+    if not s or s.get("state") == "off" or not fx["enable"]:
+        fx.update(active=False, blocked=[], watch=[])
+    return fx
+
+
 def merge(a, b):
     out = dict(a)
     for k, v in b.items():
@@ -180,6 +216,8 @@ def set_cn(kind):
 
 def cn_tick():
     db = STATE["dbus"]
+    if db.get("corpline_bad_state") == "downloading" and time.time() >= STATE.get("bad_done_at", 0):
+        db.update(corpline_bad_state="ok", corpline_bad_count="4652", corpline_bad_time=str(int(time.time())))
     if db.get("corpline_cn_state") == "downloading" and time.time() >= STATE.get("cn_done_at", 0):
         db.update(corpline_cn_state="ok", corpline_cn_count="109795", corpline_cn_time=str(int(time.time())), corpline_cn_src="download")
         db.pop("corpline_cn_error", None)
@@ -256,6 +294,9 @@ class H(BaseHTTPRequestHandler):
                 set_cn(q["cn"][0])
                 STATE["cn_done_at"] = time.time() + 3600
             STATE["noclients"] = q.get("noclients", ["0"])[0] == "1"
+            if "sec" in q or "s" in q:
+                STATE["sec"] = q.get("sec", ["busy"])[0]
+                STATE["unblocked"] = set()
             STATE["net"] = q.get("net", ["ok"])[0]
             with open(ASP, encoding="utf-8") as f:
                 html = f.read()
@@ -301,6 +342,10 @@ class H(BaseHTTPRequestHandler):
                 return
             d = current_domains()
             return self.json(d) if d is not None else self.send(404, "not found")
+        if p == "/_temp/corpline_security.json":
+            if self.net_down():
+                return
+            return self.json(current_security())
         if p == "/_temp/corpline_log.txt":
             return self.file(os.path.join(FIX, "corpline_log.txt"), "text/plain; charset=utf-8")
         if p == "/appGet.cgi":
@@ -365,6 +410,18 @@ class H(BaseHTTPRequestHandler):
         if action == 6:
             db.update(corpline_cn_state="downloading", corpline_cn_tried=str(int(time.time())))
             STATE["cn_done_at"] = time.time() + 6
+            return self.json({"result": req.get("id")})
+        if action == 7:
+            ip = db.pop("corpline_sec_unblock", "")
+            if ip == "all":
+                with open(os.path.join(FIX, "security.json"), encoding="utf-8") as f:
+                    STATE["unblocked"] |= {b["ip"] for b in json.load(f)["blocked"]}
+            elif ip:
+                STATE["unblocked"].add(ip)
+            return self.json({"result": req.get("id")})
+        if action == 8:
+            db.update(corpline_bad_state="downloading")
+            STATE["bad_done_at"] = time.time() + 6
             return self.json({"result": req.get("id")})
         if action in (1, 4):
             save_admin_device()

@@ -54,6 +54,38 @@ pub struct Config {
     pub hook_cmd: String,
     pub notify_cmd: String,
     pub daily_cap: u32,
+
+    pub sec: Sec,
+}
+
+/// 安全防护：外来的连接按来源 IP 计数，超过阈值自动封锁；家里设备异常外连只提醒。
+/// 计数与拦截都由内核（hashlimit / ipset）完成，守护程序只定时读结果、写事件。
+#[derive(Clone, Debug)]
+pub struct Sec {
+    pub enable: bool,
+    /// 外网网卡；空 = 按主路由表默认路由的网卡（PPPoE 是 ppp0）
+    pub wan_if: String,
+    /// 白名单（IP 或网段）：不计数、不封锁、不提醒
+    pub allow: Vec<String>,
+    pub block_secs: u32,
+    /// 家里的管理类端口（端口转发后的内网端口）：连得太频繁按"猜密码"处理
+    pub admin_ports: Vec<u16>,
+    /// 家里设备连外网这些端口太频繁 = 可能中毒在扫描别人
+    pub risky_ports: Vec<u16>,
+    /// 每分钟阈值：连路由器本身（扫描）/ 连管理端口 / 任意转发 / 家里设备扫外网 / 家里设备狂连同一地址
+    pub scan_per_min: u32,
+    pub brute_per_min: u32,
+    pub flood_per_min: u32,
+    pub out_scan_per_min: u32,
+    pub out_flood_per_min: u32,
+    /// 不算"外网"的目的地（家里设备访问它们不提醒）
+    pub private_nets: Vec<String>,
+    /// 公开的恶意 IP 名单（每行一个 IP 或网段）
+    pub bad_list: PathBuf,
+    pub leases_file: PathBuf,
+    /// "MAC<TAB>名字" 的设备名单（外壳脚本从网页的设备名单生成）
+    pub names_file: PathBuf,
+    pub poll_secs: u32,
 }
 
 fn list(v: Option<&String>) -> Vec<String> {
@@ -89,6 +121,23 @@ fn port_rules(v: Option<&String>) -> Vec<(String, u16, u16)> {
             (a >= 1 && a <= b).then(|| (mac.to_ascii_uppercase(), a, b))
         })
         .collect()
+}
+
+fn ports(v: Option<&String>, default: &[u16]) -> Vec<u16> {
+    match v {
+        None => default.to_vec(),
+        Some(_) => list(v).iter().filter_map(|x| x.parse().ok()).filter(|p| *p > 0).collect(),
+    }
+}
+
+/// IPv4 地址或网段（a.b.c.d 或 a.b.c.d/n），不合法的丢掉，防止写进 ipset 时整批失败
+pub fn is_net(s: &str) -> bool {
+    let (ip, len) = s.split_once('/').unwrap_or((s, "32"));
+    ip.parse::<Ipv4Addr>().is_ok() && len.parse::<u8>().map(|n| n <= 32).unwrap_or(false)
+}
+
+pub fn nets(v: Option<&String>) -> Vec<String> {
+    list(v).into_iter().filter(|x| is_net(x)).collect()
 }
 
 fn flag(v: Option<&String>, default: bool) -> bool {
@@ -197,6 +246,31 @@ impl Config {
             hook_cmd: s("hook_cmd", &format!("{} hook", self_exe.display())),
             notify_cmd: s("notify_cmd", ""),
             daily_cap: num(g("daily_cap"), 60),
+
+            sec: Sec {
+                enable: flag(g("sec_enable"), true),
+                wan_if: s("wan_if", ""),
+                allow: nets(g("sec_allow")),
+                block_secs: num(g("sec_block_hours"), 24).clamp(1, 24 * 30) * 3600,
+                admin_ports: ports(g("sec_admin_ports"), &[22, 23, 80, 443, 3389, 5000, 5001, 6690, 8080, 8443, 8085, 13000]),
+                risky_ports: ports(g("sec_risky_ports"), &[22, 23, 445, 1433, 2323, 3306, 3389, 5555, 6379, 7547, 8291, 37215, 52869]),
+                scan_per_min: num(g("sec_scan_per_min"), 20).max(1),
+                brute_per_min: num(g("sec_brute_per_min"), 40).max(1),
+                flood_per_min: num(g("sec_flood_per_min"), 300).max(1),
+                out_scan_per_min: num(g("sec_out_scan_per_min"), 30).max(1),
+                out_flood_per_min: num(g("sec_out_flood_per_min"), 600).max(1),
+                private_nets: match g("sec_private_nets") {
+                    Some(_) => nets(g("sec_private_nets")),
+                    None => ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/3"]
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect(),
+                },
+                bad_list: PathBuf::from(s("sec_bad_list", "/koolshare/configs/corpline/bad-ips.netset")),
+                leases_file: PathBuf::from(s("leases_file", "/var/lib/misc/dnsmasq.leases")),
+                names_file: PathBuf::from(s("names_file", "/var/run/corpline/devices.tsv")),
+                poll_secs: num(g("sec_poll_secs"), 30).clamp(1, 600),
+            },
         };
         if cfg.server.is_empty() {
             return Err("还没有填写公司线路服务器地址".into());
@@ -278,6 +352,25 @@ mod tests {
         assert_eq!(c.overseas_domains, vec!["apple.com", "sony.com"]);
         assert_eq!(c.direct_macs, vec!["AA:BB:CC:DD:EE:FF"]);
         assert_eq!(c.mark, 0x8000);
+    }
+
+    #[test]
+    fn security() {
+        let c = Config::from_map(&base()).unwrap();
+        assert!(c.sec.enable);
+        assert_eq!(c.sec.block_secs, 86400);
+        assert!(c.sec.admin_ports.contains(&5001));
+        assert!(c.sec.private_nets.contains(&"192.168.0.0/16".to_string()));
+        let mut m = base();
+        m.insert("sec_allow".into(), "203.0.113.0/24, 1.2.3.4,bad,1.2.3.4/40".into());
+        m.insert("sec_admin_ports".into(), "".into());
+        m.insert("sec_block_hours".into(), "0".into());
+        m.insert("sec_private_nets".into(), "10.0.0.0/8".into());
+        let c = Config::from_map(&m).unwrap();
+        assert_eq!(c.sec.allow, vec!["203.0.113.0/24", "1.2.3.4"]);
+        assert!(c.sec.admin_ports.is_empty());
+        assert_eq!(c.sec.block_secs, 3600);
+        assert_eq!(c.sec.private_nets, vec!["10.0.0.0/8"]);
     }
 
     #[test]

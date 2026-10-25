@@ -204,6 +204,15 @@
 /* 列表里每行的线路选择：选中态用中性底，一列看下来不刺眼 */
 .cl .cl-seg.q button[aria-checked="true"]{background:#66757A;color:#fff}
 
+/* 安全防护 */
+.cl .cl-guard .cl-metrics{margin-top:0;padding:16px 20px;border-top:0}
+.cl .cl-guard .cl-tl{border-top:1px solid var(--line)}
+.cl .cl-guard > .cl-row{border-top:1px solid var(--line)}
+.cl .cl-g-note{display:flex;align-items:flex-start;gap:10px;padding:14px 20px;font-size:13px;line-height:20px;color:var(--t2)}
+.cl .cl-g-note .cl-dot{width:8px;height:8px;margin-top:6px}
+.cl .cl-dev .cl-ip{font-variant-numeric:tabular-nums}
+.cl .cl-g-foot{display:flex;justify-content:flex-end;padding-top:4px}
+
 /* 页脚 */
 .cl .cl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:24px;font-size:12px;line-height:18px;color:var(--t3)}
 
@@ -236,6 +245,8 @@ var CL = (function () {
 	var shown = { key: null, act: null, desc: null, tl: null };
 	var edit = {};               // 各设置行未保存的改动
 	var logOpen = false, logTimer = null, pollTimer = null, polls = 0, fastUntil = 0;
+	var sec = null, secCode = 0;  // 安全防护状态（/_temp/corpline_security.json）与最近一次读取的结果
+	var secAll = false;           // 安全防护记录是否展开全部
 
 	/* ---------- 小工具 ---------- */
 	function $i(id) { return document.getElementById(id); }
@@ -320,6 +331,7 @@ var CL = (function () {
 	}
 	function unreachable() { return net.fails >= 2 && Date.now() - net.okAt > 10000; }
 	// action：1 应用（会重连）  4 只保存（不重连）  5 发测试通知  2 立即重试  3 重新启用  0 关闭  6 更新中国服务名单
+	//         7 解封（corpline_sec_unblock）  8 更新恶意地址名单
 	// 只提交这次改动的字段：软件中心只写收到的键，没提交的设置保持路由器上的值
 	function submit(action, over, cb) {
 		var id = Math.floor(Math.random() * 100000000), f = '', k;
@@ -344,7 +356,7 @@ var CL = (function () {
 	function curStarted() { return st && st.state !== 'off' && st.started ? st.started : 0; }
 	function startPending(was) { return { kind: 'start', at: Date.now(), started: was }; }
 	function renderBusy() {
-		var on = inflight > 0, ids = ['clSave-account', 'clSave-devices', 'clSave-domains', 'clSave-notify', 'clSave-adv', 'clCn', 'clNtTest', 'clCnUpd'], i, el;
+		var on = inflight > 0, ids = ['clSave-account', 'clSave-devices', 'clSave-domains', 'clSave-guard', 'clSave-notify', 'clSave-adv', 'clCn', 'clNtTest', 'clCnUpd', 'clBadUpd'], i, el;
 		for (i = 0; i < ids.length; i++) { el = $i(ids[i]); if (el) el.disabled = on || (ids[i] === 'clCn' && !dbLoaded); }
 		el = $i('clActBtn');
 		if (el) el.disabled = on || el.getAttribute('data-busy') === '1';
@@ -598,6 +610,182 @@ var CL = (function () {
 		var ul = $i('clTimeline');
 		ul.className = 'cl-card cl-tl' + (wide ? ' wide' : '');
 		ul.innerHTML = h.slice(1);
+	}
+
+	/* 安全防护：外网反复连进来自动封锁，家里设备异常外连只提醒 */
+	var G_KIND = { scan: '扫描端口', brute: '猜密码', flood: '大量连接' };
+	function left(s) {
+		s = Math.max(0, s);
+		if (s < 3600) return Math.max(1, Math.ceil(s / 60)) + ' 分钟';
+		if (s < 86400 * 2) return Math.ceil(s / 3600) + ' 小时';
+		return Math.ceil(s / 86400) + ' 天';
+	}
+	function guardOn() { return db.corpline_sec_enable !== '0'; }
+	function guardRunning() { return !!(sec && sec.active && fresh() && sec.updated && Date.now() / 1000 - num(sec.updated) <= 120); }
+	function renderGuard() {
+		var note = '', dot = '', ev = sec && sec.events || [], g = sec && sec.stats || {}, h = '', i, e, n, m = '';
+		var key = viewKey();
+		if (key === 'noreach') note = '暂时读不到安全防护的状态，页面会自动重试。';
+		else if (!dbLoaded || key === 'loading') note = '正在读取…';
+		else if (!guardOn()) note = '安全防护已关闭。在下面的「设置 › 安全防护」里可以打开。';
+		else if (key === 'off' || key === 'setup' || key === 'paused' || key === 'down' || key === 'starting' && !guardRunning()) note = '公司专线开启后，安全防护随之生效。';
+		else if (secCode === -1 && !sec) note = '暂时读不到安全防护的状态，页面会自动重试。';
+		else if (sec && sec.error) { note = '安全防护没有生效：' + sec.error + '。公司线路不受影响。'; dot = 'err'; }
+		else if (!sec || !guardRunning()) note = '正在启动安全防护…';
+		var live = !note;
+		$i('clGNote').hidden = !note;
+		if (note) {
+			$i('clGNoteDot').className = 'cl-dot ' + (dot || 'idle');
+			setVal('clGNoteTx', note);
+		}
+		if (live) {
+			var today = dayStart(new Date()), kinds = { scan: 0, brute: 0, flood: 0 }, k;
+			for (i = 0; i < ev.length; i++) if (dayStart(new Date(num(ev[i].t) * 1000)) === today && kinds.hasOwnProperty(ev[i].kind)) kinds[ev[i].kind]++;
+			var parts = [];
+			for (k in kinds) if (kinds.hasOwnProperty(k) && kinds[k]) parts.push(G_KIND[k] + ' ' + kinds[k]);
+			var al = num(g.alerts_today);
+			m = '<div class="cl-mt"><div class="l">正在封锁</div><div class="v cl-num">' + num(g.blocked) + ' 个地址</div><div class="s">满 ' + left(num(sec.block_hours) * 3600) + '自动解封</div></div>' +
+				'<div class="cl-mt"><div class="l">今天新封</div><div class="v cl-num">' + num(g.blocks_today) + ' 个</div><div class="s">' + (parts.length ? parts.join(' · ') : '没有新的') + '</div></div>' +
+				'<div class="cl-mt"><div class="l">家里设备</div><div class="v">' + (al ? al + ' 次提醒' : '正常') + '</div><div class="s">异常外连只提醒，不拦截</div></div>' +
+				'<div class="cl-mt"><div class="l">已挡下</div><div class="v cl-num">' + thousands(num(g.dropped)) + ' 次</div><div class="s">' + (num(g.bad_count) ? '恶意地址名单 ' + thousands(num(g.bad_count)) + ' 条' : '被封地址的连接') + '</div></div>';
+		}
+		var mt = $i('clGMetrics');
+		if (mt.innerHTML !== m) mt.innerHTML = m;
+		mt.hidden = !live;
+
+		// 记录：最近 5 条，展开看全部（最多 50）
+		n = Math.min(ev.length, secAll ? 50 : 5);
+		var wide = false;
+		for (i = 0; i < n; i++) if (isOld(num(ev[i].t))) wide = true;
+		for (i = 0; i < n; i++) {
+			e = ev[i];
+			h += '<li><span class="tm cl-num">' + whenLabel(num(e.t)) + '</span><span class="cl-dot' + (e.level === 'alert' ? ' warn' : '') + '"></span><span class="tx">' + esc(e.m) + '</span></li>';
+		}
+		if (!h && live) h = '<li class="empty"><span class="tx">还没有可疑的连接。外网反复连进来会自动封锁，并记在这里。</span></li>';
+		var ul = $i('clGEv');
+		ul.hidden = !h;
+		ul.className = 'cl-tl' + (wide ? ' wide' : '');
+		if (ul.getAttribute('data-h') !== h) { ul.innerHTML = h; ul.setAttribute('data-h', h); }
+		var more = $i('clGAll');
+		more.hidden = ev.length <= 5;
+		more.textContent = secAll ? '只看最近 5 条' : '查看全部记录（' + Math.min(ev.length, 50) + '）';
+		more.setAttribute('aria-expanded', secAll ? 'true' : 'false');
+
+		// 正在封锁的地址
+		var bl = live ? sec.blocked || [] : [], b = '', now = srvNow();
+		$i('r-blocked').hidden = !bl.length;
+		if (sec && !bl.length && $i('r-blocked').className.indexOf(' open') >= 0) openRow('r-blocked', false);
+		for (i = 0; i < bl.length; i++) {
+			e = bl[i];
+			var sub = [G_KIND[e.kind] || '可疑连接', whenLabel(num(e.since)) + ' 封锁', '还剩 ' + left(num(e.expires) - now)];
+			if (e.hits != null && num(e.hits)) sub.push('挡下 ' + thousands(num(e.hits)) + ' 次');
+			b += '<div class="cl-dev"><div><b class="cl-ip">' + esc(e.ip) + '</b><span class="cl-num">' + esc(sub.join(' · ')) + '</span></div>' +
+				'<button type="button" class="cl-lnk" data-unblock="' + esc(e.ip) + '" aria-label="解封 ' + esc(e.ip) + '">解封</button></div>';
+		}
+		if (bl.length > 1) b += '<div class="cl-g-foot"><button type="button" class="cl-lnk" data-unblock="all">全部解封</button></div>';
+		var box = $i('clBlkList');
+		if (box.getAttribute('data-h') !== b) {
+			box.innerHTML = b; box.setAttribute('data-h', b);
+			var btns = box.getElementsByTagName('button');
+			for (i = 0; i < btns.length; i++) btns[i].onclick = unblock;
+		}
+		setVal('clBlkVal', bl.length + ' 个');
+		renderBusy();
+	}
+	function unblock() {
+		var ip = this.getAttribute('data-unblock'), btn = this;
+		if (inflight) return;
+		btn.disabled = true; btn.textContent = '正在解封…';
+		submit(7, { corpline_sec_unblock: ip }, function (ok) {
+			delete db.corpline_sec_unblock;
+			if (!ok) { btn.disabled = false; btn.textContent = ip === 'all' ? '全部解封' : '解封'; flash('没有解封成功：路由器没有响应，请稍后再试。'); return; }
+			if (sec && sec.blocked) {
+				sec.blocked = ip === 'all' ? [] : sec.blocked.filter(function (x) { return x.ip !== ip; });
+				if (sec.stats) sec.stats.blocked = sec.blocked.length;
+			}
+			renderGuard();
+			if (!sec || !sec.blocked || !sec.blocked.length) { var h = $i('r-blocked').getElementsByClassName('cl-row-h')[0]; if (h) h.focus(); }
+		});
+	}
+
+	/* 设置 › 安全防护：开关、封锁时长、白名单 */
+	function splitNets(s) { return String(s || '').split(/[,\s]+/).filter(function (x) { return !!x; }); }
+	function guardCur() { return edit.guard || { on: guardOn(), hours: db.corpline_sec_block_hours || '24', allow: splitNets(db.corpline_sec_allow) }; }
+	// "1.2.3.4" / "1.2.3.0/24"；网段按掩码取整（1.2.3.4/24 → 1.2.3.0/24）；不对返回 null
+	function normNet(v) {
+		var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?:\/(\d{1,2}))?$/.exec(trim(v)), i, a = [], n, len;
+		if (!m) return null;
+		for (i = 1; i <= 4; i++) { n = +m[i]; if (n > 255) return null; a.push(n); }
+		len = m[5] === undefined ? 32 : +m[5];
+		if (len < 8 || len > 32) return null;
+		var ip = ((a[0] << 24) >>> 0) + (a[1] << 16) + (a[2] << 8) + a[3], mask = len === 32 ? 0xFFFFFFFF : (0xFFFFFFFF << (32 - len)) >>> 0;
+		ip = (ip & mask) >>> 0;
+		var s = [ip >>> 24, (ip >>> 16) & 255, (ip >>> 8) & 255, ip & 255].join('.');
+		return len === 32 ? s : s + '/' + len;
+	}
+	function guardDirty() {
+		var c = guardCur();
+		return !!edit.guard && (c.on !== guardOn() || c.hours !== (db.corpline_sec_block_hours || '24') || c.allow.join(',') !== splitNets(db.corpline_sec_allow).join(','));
+	}
+	function guardNeedsRestart() { var c = guardCur(); return c.on !== guardOn() || c.hours !== (db.corpline_sec_block_hours || '24'); }
+	function renderGuardSet() {
+		if (!dbLoaded) return;
+		var c = guardCur(), b = $i('clGSeg').getElementsByTagName('button'), i, h = '';
+		for (i = 0; i < b.length; i++) b[i].setAttribute('aria-checked', (b[i].getAttribute('data-v') === '1') === c.on ? 'true' : 'false');
+		setVal('clGVal', c.on ? '已开启' + (c.allow.length ? ' · 白名单 ' + c.allow.length + ' 条' : '') : '已关闭');
+		$i('clGOpts').className = 'cl-pend' + (c.on ? ' on' : '');
+		$i('clGOpts').setAttribute('aria-hidden', c.on ? 'false' : 'true');
+		$i('f-ghours').value = c.hours;
+		for (i = 0; i < c.allow.length; i++)
+			h += '<div class="cl-dev"><div><b class="cl-ip">' + esc(c.allow[i]) + '</b></div><button type="button" class="cl-lnk" data-rmnet="' + esc(c.allow[i]) + '" aria-label="从白名单移除 ' + esc(c.allow[i]) + '">移除</button></div>';
+		if (!h) h = '<div class="cl-dev empty">没有白名单。</div>';
+		var box = $i('clGAllow');
+		if (box.getAttribute('data-h') !== h) {
+			box.innerHTML = h; box.setAttribute('data-h', h);
+			var rm = box.getElementsByTagName('button');
+			for (i = 0; i < rm.length; i++) rm[i].onclick = function () { var x = this.getAttribute('data-rmnet'), g = guardCur(); edit.guard = { on: g.on, hours: g.hours, allow: g.allow.filter(function (y) { return y !== x; }) }; msg('guard', ''); renderGuardSet(); };
+		}
+		renderBadList();
+		setPend('guard', guardDirty());
+		var hint = $i('clPend-guard').getElementsByClassName('cl-pend-hint')[0];
+		if (hint) hint.textContent = guardNeedsRestart() && db.corpline_enable === '1' ? '保存后公司专线会重新连接一次，期间家里先走直连。' : '保存后马上生效，不影响线路。';
+	}
+	function addNet() {
+		var v = normNet($i('clGNet').value), g = guardCur();
+		if (!v) { bad('clGNet', 'guard', '请填 IP 地址或网段，例如 203.0.113.10 或 203.0.113.0/24。'); return; }
+		if (g.allow.indexOf(v) >= 0) { bad('clGNet', 'guard', v + ' 已经在白名单里了。'); return; }
+		if (g.allow.length >= 64) { bad('clGNet', 'guard', '白名单最多 64 条。'); return; }
+		edit.guard = { on: g.on, hours: g.hours, allow: g.allow.concat([v]) };
+		$i('clGNet').value = ''; msg('guard', '');
+		renderGuardSet();
+	}
+	// 恶意地址名单：多少条、哪天的、正在下载、上次为什么没下成（路由器写在 corpline_bad_*）
+	var badTimer = null;
+	function renderBadList() {
+		var tx = $i('clBadTx'), btn = $i('clBadUpd'), box = $i('clBadSt'), s = db.corpline_bad_state || '', n = num(db.corpline_bad_count), t = num(db.corpline_bad_time), cls = '', text, label = '立即更新';
+		clearTimeout(badTimer); badTimer = null;
+		if (s === 'downloading') {
+			text = '正在下载最新的恶意地址名单…' + (n ? '（现在用的是' + (t ? dayLabel(t) : '旧') + '的名单）' : '');
+			label = '';
+			badTimer = setTimeout(function () { if (!document.hidden) loadDbus(renderAll); }, 3000);
+		} else if (s === 'failed') {
+			cls = 'warn';
+			text = '名单更新没成功：' + (db.corpline_bad_error || '下载出错') + '，继续用' + (t ? dayLabel(t) : '旧') + '的名单';
+			label = '重试';
+		} else if (n) text = '恶意地址名单 ' + thousands(n) + ' 条 · ' + (t ? dayLabel(t) + '的名单' : '已就绪') + ' · 每周三凌晨自动更新';
+		else { text = '还没有恶意地址名单，按次数封锁照常生效'; label = '下载'; }
+		box.className = 'cl-cnst' + (cls ? ' ' + cls : '');
+		tx.textContent = text;
+		btn.hidden = !label;
+		btn.textContent = label;
+	}
+	function onBadUpd() {
+		if (inflight || !dbLoaded) return;
+		submit(8, null, function (ok) {
+			if (!ok) { flash(failText()); return; }
+			db.corpline_bad_state = 'downloading';
+			renderBadList();
+		});
 	}
 
 	/* 设置行 */
@@ -1027,12 +1215,12 @@ var CL = (function () {
 	function renderSettings() {
 		if (!dbLoaded) { renderLock(true); return; }
 		renderLock(false);
-		renderAccount(); renderDevices(); renderDomains(); renderNotify(); renderAdv(); renderToggles(); renderRecent();
+		renderAccount(); renderDevices(); renderDomains(); renderGuardSet(); renderNotify(); renderAdv(); renderToggles(); renderRecent();
 	}
 	// 还没成功读到过设置：值一律显示「—」（不是「未填写」），设置行和国内直连开关先锁住，免得用空快照保存
 	var locked = null;
 	function renderLock(close) {
-		var on = !dbLoaded, rows = ['r-account', 'r-devices', 'r-global', 'r-notify', 'r-adv'], vals = ['clAcctVal', 'clDevVal', 'clDomVal', 'clNtVal', 'clAdvVal'], i;
+		var on = !dbLoaded, rows = ['r-account', 'r-devices', 'r-global', 'r-guard', 'r-notify', 'r-adv'], vals = ['clAcctVal', 'clDevVal', 'clDomVal', 'clGVal', 'clNtVal', 'clAdvVal'], i;
 		if (on) for (i = 0; i < vals.length; i++) setVal(vals[i], '—');
 		else setVal('clAdvVal', '备用 DNS、判定灵敏度');
 		if (locked === on && !(on && close)) return;
@@ -1045,7 +1233,7 @@ var CL = (function () {
 		cn.disabled = on || inflight > 0;
 		if (on) cn.setAttribute('aria-checked', 'false');
 	}
-	function renderAll() { renderStatus(); renderTimeline(); renderSettings(); }
+	function renderAll() { renderStatus(); renderTimeline(); renderGuard(); renderSettings(); }
 
 	/* ---------- 动作 ---------- */
 	function lockedDeviceFields(over) {
@@ -1125,6 +1313,13 @@ var CL = (function () {
 			over.corpline_direct_domains = rulesKey(rl, 'direct');
 			over.corpline_overseas_domains = rulesKey(rl, 'overseas');
 			after = function () { edit.domains = null; };
+		} else if (which === 'guard') {
+			var g = guardCur();
+			over.corpline_sec_enable = g.on ? '1' : '0';
+			over.corpline_sec_block_hours = g.hours;
+			over.corpline_sec_allow = g.allow.join(',');
+			var restart = guardNeedsRestart();
+			after = function () { edit.guard = null; };
 		} else if (which === 'notify') {
 			var n = notifyCur(); n.url = trim($i('f-hook').value);
 			if (n.mode !== 'off' && !/^https?:\/\/\S+$/.test(n.url)) { bad('f-hook', 'notify', '请粘贴完整的推送地址（以 https:// 开头）。'); return; }
@@ -1140,8 +1335,8 @@ var CL = (function () {
 			over.corpline_isp_dns = dns; over.corpline_sensitivity = $i('f-sens').value || a.sens;
 			after = function () { edit.adv = null; };
 		}
-		// 通知设置在发送时才读取，只保存不重连；其余设置会影响线路，保存后重连
-		var action = which === 'notify' ? 4 : 1;
+		// 通知设置在发送时才读取、白名单由守护程序自己更新：只保存不重连；其余设置会影响线路，保存后重连
+		var action = which === 'notify' || which === 'guard' && !restart ? 4 : 1;
 		var btn = $i('clSave-' + which);
 		btn.disabled = true; msg(which, '正在保存…');
 		submit(action, over, function (ok) {
@@ -1160,6 +1355,7 @@ var CL = (function () {
 		msg(which, '');
 		if (which === 'devices') { $i('clDevMac').value = ''; $i('clDevName').value = ''; portsOpen = ''; }
 		if (which === 'domains') $i('clDomIn').value = '';
+		if (which === 'guard') $i('clGNet').value = '';
 		renderSettings();
 	}
 	function onCn() {
@@ -1242,7 +1438,12 @@ var CL = (function () {
 			else reach(false);
 			waitPoll = false;
 			renderStatus(); renderTimeline();
-			done();
+			getJSON('/_temp/corpline_security.json', function (c2, g) {
+				secCode = g && typeof g === 'object' && g.v ? 200 : c2 === 404 ? 404 : -1;
+				if (secCode === 200) sec = g; else if (secCode === 404) sec = null;
+				renderGuard();
+				done();
+			});
 		});
 		polls++;
 		if (polls % 3 === 0 || !dbLoaded) loadDbus(function () { renderStatus(); renderSettings(); });
@@ -1282,7 +1483,7 @@ var CL = (function () {
 		$i('clAcctCancel').onclick = function () { $i('f-pw').value = ''; undoRow('account'); openRow('r-account', false); };
 		var ids = ['f-srv', 'f-user', 'f-pw'];
 		for (i = 0; i < ids.length; i++) $i(ids[i]).oninput = function () { edit.account = true; if ($i('clMsg-account').className.indexOf('err') >= 0) msg('account', ''); };
-		var saves = ['account', 'devices', 'domains', 'notify', 'adv'];
+		var saves = ['account', 'devices', 'domains', 'guard', 'notify', 'adv'];
 		for (i = 0; i < saves.length; i++) (function (w) {
 			$i('clSave-' + w).onclick = function () { saveRow(w); };
 			var u = $i('clUndo-' + w); if (u) u.onclick = function () { undoRow(w); };
@@ -1295,6 +1496,13 @@ var CL = (function () {
 		$i('clRecQ').oninput = function () { recLimit = 30; renderRecent(); };
 		$i('clRecMore').onclick = function () { recLimit += 30; renderRecent(); };
 		$i('clNtTest').onclick = testNotify;
+		$i('clGAll').onclick = function () { secAll = !secAll; renderGuard(); };
+		$i('clGAdd').onclick = addNet;
+		$i('clGNet').onkeydown = function (e) { if ((e || window.event).keyCode === 13) addNet(); };
+		$i('clBadUpd').onclick = onBadUpd;
+		var gs = $i('clGSeg').getElementsByTagName('button');
+		for (i = 0; i < gs.length; i++) gs[i].onclick = function () { var g = guardCur(); edit.guard = { on: this.getAttribute('data-v') === '1', hours: g.hours, allow: g.allow }; msg('guard', ''); renderGuardSet(); };
+		$i('f-ghours').onchange = function () { var g = guardCur(); edit.guard = { on: g.on, hours: this.value, allow: g.allow }; renderGuardSet(); };
 		$i('clDomIn').onkeydown = function (e) { if ((e || window.event).keyCode === 13) addDomain(); };
 		$i('clDevMac').onkeydown = function (e) { if ((e || window.event).keyCode === 13) addDevice(); };
 		var segs = $i('clNtSeg').getElementsByTagName('button');
@@ -1314,7 +1522,7 @@ var CL = (function () {
 
 	function start() {
 		bind();
-		renderStatus(); renderTimeline(); renderLock(false);
+		renderStatus(); renderTimeline(); renderGuard(); renderLock(false);
 		loadDbus(function () { renderAll(); loop(); });
 		loadClients();
 		if (document.addEventListener) document.addEventListener('visibilitychange', onVisible, false);
@@ -1369,6 +1577,17 @@ function menu_hook() {
   <ul class="cl-card cl-tl" id="clTimeline"></ul>
   <div class="cl-xp" id="clLogWrap" aria-hidden="true"><div><div class="cl-log" id="clLog" tabindex="0" aria-label="运行日志"></div></div></div>
 
+  <div class="cl-sec-h"><h2>安全防护</h2><button type="button" class="cl-lnk" id="clGAll" aria-expanded="false" aria-controls="clGEv" hidden></button></div>
+  <section class="cl-card cl-guard" id="clGuard" aria-label="安全防护">
+    <div class="cl-g-note" id="clGNote"><span class="cl-dot idle" id="clGNoteDot"></span><span id="clGNoteTx" role="status">正在读取…</span></div>
+    <div class="cl-metrics" id="clGMetrics" hidden></div>
+    <ul class="cl-tl" id="clGEv" hidden></ul>
+    <div class="cl-row" id="r-blocked" hidden>
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>正在封锁的地址</b><span>到时间自动解封；误封的可以马上解封</span></span><span class="val cl-num" id="clBlkVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in"><div id="clBlkList"></div></div></div></div>
+    </div>
+  </section>
+
   <div class="cl-sec-h"><h2>设置</h2></div>
   <div class="cl-card" id="clRows">
 
@@ -1420,8 +1639,28 @@ function menu_hook() {
       <div class="cl-cnst" id="clCnSt" hidden><span class="tx" id="clCnTx" role="status"></span><button type="button" class="cl-lnk" id="clCnUpd">立即更新</button></div>
     </div>
 
+    <div class="cl-row" id="r-guard">
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>安全防护</b><span>外网反复连进来自动封锁；家里设备异常外连时提醒你</span></span><span class="val" id="clGVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in">
+        <div class="cl-seg" id="clGSeg" role="radiogroup" aria-label="安全防护"><button type="button" role="radio" data-v="1">开启</button><button type="button" role="radio" data-v="0">关闭</button></div>
+        <p class="cl-hint">只看新建的连接、只加拦截不加放行，不影响游戏、BT 和家里设备正常上网。有人猜密码、家里设备异常时，会按「异常通知」的方式提醒你。</p>
+        <div class="cl-pend" id="clGOpts"><div>
+          <div class="cl-fg" style="margin-top:16px">
+            <label for="f-ghours">封锁时长</label><select class="cl-in" id="f-ghours"><option value="1">1 小时</option><option value="24">24 小时</option><option value="168">7 天</option></select>
+          </div>
+          <div class="cl-subh">白名单</div>
+          <div id="clGAllow"></div>
+          <div class="cl-add"><input class="cl-in cl-num" id="clGNet" placeholder="添加 IP 或网段，例如 203.0.113.0/24" aria-label="添加到白名单" spellcheck="false" autocomplete="off"><button type="button" class="cl-btn sec" id="clGAdd">添加</button></div>
+          <p class="cl-msg err cl-rowmsg" id="clMsg-guard" role="status"></p>
+          <p class="cl-hint">白名单里的地址不计数、不封锁、不提醒，适合公司出口、出差时常用的地址。</p>
+          <div class="cl-cnst" id="clBadSt" style="padding:12px 0 0;margin:0"><span class="tx" id="clBadTx" role="status"></span><button type="button" class="cl-lnk" id="clBadUpd">立即更新</button></div>
+        </div></div>
+        <div class="cl-pend" id="clPend-guard" aria-hidden="true"><div><div class="cl-acts"><button type="button" class="cl-btn pri" id="clSave-guard" tabindex="-1">保存</button><button type="button" class="cl-btn sec" id="clUndo-guard" tabindex="-1">撤销</button><span class="cl-msg cl-pend-hint"></span></div></div></div>
+      </div></div></div>
+    </div>
+
     <div class="cl-row" id="r-notify">
-      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>异常通知</b><span>直连超过 30 分钟或账号登录失败时提醒你</span></span><span class="val" id="clNtVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>异常通知</b><span>直连超过 30 分钟、账号登录失败，或发现有人猜密码、家里设备异常时提醒你</span></span><span class="val" id="clNtVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
       <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in">
         <div class="cl-seg" id="clNtSeg" role="radiogroup" aria-label="通知方式"><button type="button" role="radio" data-v="off">关闭</button><button type="button" role="radio" data-v="feishu">飞书</button><button type="button" role="radio" data-v="bark">Bark</button></div>
         <div class="cl-pend" id="clNtHookWrap"><div><div class="cl-fg" style="margin-top:16px"><label for="f-hook">推送地址</label><input class="cl-in" id="f-hook" spellcheck="false"></div></div></div>

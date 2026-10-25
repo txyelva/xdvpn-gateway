@@ -9,6 +9,7 @@
 
 mod config;
 mod dns;
+mod guard;
 mod machine;
 mod net;
 mod oc;
@@ -174,6 +175,7 @@ struct Daemon {
     live_pending: Option<bool>,
     /// 本进程启动时刻（墙钟秒）：网页靠它区分"新启动的守护程序"与"即将被停掉的旧进程"
     started: u64,
+    guard: guard::Guard,
 }
 
 fn run(conf: &Path) -> i32 {
@@ -291,6 +293,7 @@ fn run(conf: &Path) -> i32 {
     let attempts = load_attempts(&cfg, day);
     let params = if cfg.relaxed { Params::relaxed(cfg.daily_cap) } else { Params::normal(cfg.daily_cap) };
     let traffic = load_traffic(&cfg, day);
+    let guard = guard::Guard::new(&cfg, conf);
     let mut d = Daemon {
         m: Machine::new(params, attempts),
         cfg,
@@ -314,6 +317,7 @@ fn run(conf: &Path) -> i32 {
         wan_up: net::has_default_route(),
         live_pending: None,
         started: sys::wall_secs(),
+        guard,
     };
     let acts = d.m.start(sys::now_ms());
     d.apply(acts);
@@ -392,6 +396,12 @@ impl Daemon {
                 }
             } else if self.m.state.tunneled() {
                 self.long_fallback_noted = false;
+            }
+            for e in self.guard.tick(&self.cfg, now) {
+                // 要马上知道的（有人猜密码、家里设备异常）才推送；一般扫描在网页和每日汇总里看
+                if e.level == "alert" {
+                    self.notify(&format!("安全提醒：{}", e.text));
+                }
             }
             if now.saturating_sub(last_res) >= 5000 {
                 let dt = now.saturating_sub(last_res);
@@ -781,6 +791,7 @@ impl Daemon {
         }
         net::dnsmasq_remove(&self.cfg);
         net::cleanup(&self.cfg);
+        self.guard.stopped(&self.cfg);
         let _ = std::fs::remove_file(self.cfg.tunnel_file());
         let _ = std::fs::remove_file(self.cfg.run_dir.join("openconnect.pid"));
         let _ = std::fs::remove_file(self.cfg.status_dir.join("corpline_domains.json"));
