@@ -68,6 +68,7 @@ impl Oc {
         cmd.env("LD_LIBRARY_PATH", &cfg.oc_ld_library_path)
             .env("CORPLINE_RUN_DIR", &cfg.run_dir)
             .env("CORPLINE_TABLE", cfg.table.to_string())
+            .env("CORPLINE_MARK", format!("0x{:x}", cfg.mark))
             .arg(format!("--protocol={}", cfg.protocol))
             .arg(format!("--user={}", cfg.user))
             .arg("--passwd-on-stdin")

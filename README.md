@@ -4,7 +4,7 @@
 
 - 设计：[docs/DESIGN.md](docs/DESIGN.md)
 - 沙盒演练结果：[docs/LAB-RESULTS.md](docs/LAB-RESULTS.md)
-- 状态：0.1.0，本机沙盒 26 个场景、195 项检查全部通过；已装在作者家里的 RT-AX86U 上使用。
+- 状态：0.1.0，本机沙盒 28 个场景、216 项检查全部通过；已装在作者家里的 RT-AX86U 上使用。
 
 ## 目录
 

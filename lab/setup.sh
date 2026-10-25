@@ -17,7 +17,7 @@ S=/tmp/lab
 bash "$LAB/teardown.sh" >/dev/null 2>&1 || true
 mkdir -p $S/pki $S/ocserv $S/dns /etc/netns/rt /etc/netns/lan1 /etc/netns/lan2 /etc/netns/corp /etc/netns/wan
 
-modprobe -a tun ip_set xt_set ip_set_hash_net ip_set_hash_ip xt_connmark xt_mark xt_mac xt_TCPMSS xt_state sch_netem 2>/dev/null || true
+modprobe -a tun ip_set xt_set ip_set_hash_net ip_set_hash_ip xt_conntrack xt_mark xt_mac xt_TCPMSS xt_state sch_netem 2>/dev/null || true
 
 for ns in wan corp rt lan1 lan2; do ip netns add $ns; ip -n $ns link set lo up; done
 

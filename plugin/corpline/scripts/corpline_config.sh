@@ -367,7 +367,7 @@ pause() {
 load_modules() {
 	local os=$(uname -r) mod ko
 	modprobe tun >/dev/null 2>&1
-	for mod in ip_set ip_set_hash_net ip_set_hash_ip ip_set_hash_ipportip ip_set_bitmap_port xt_set xt_mark xt_connmark xt_mac xt_state xt_TCPMSS xt_addrtype xt_multiport xt_hashlimit; do
+	for mod in ip_set ip_set_hash_net ip_set_hash_ip ip_set_hash_ipportip ip_set_bitmap_port xt_set xt_mark xt_conntrack xt_connmark xt_mac xt_state xt_TCPMSS xt_addrtype xt_multiport xt_hashlimit; do
 		lsmod | grep -q "^$mod " && continue
 		modprobe $mod >/dev/null 2>&1 && continue
 		ko=$(find /lib/modules/$os -name "$mod.ko" 2>/dev/null | head -n1)

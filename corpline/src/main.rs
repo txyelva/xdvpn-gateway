@@ -108,7 +108,11 @@ fn hook() -> i32 {
     let file = run_dir.join("tunnel.env");
     match reason.as_str() {
         "connect" | "reconnect" => {
-            let ok = net::tun_up(&dev, &env("INTERNAL_IP4_ADDRESS"), &env("INTERNAL_IP4_MTU"), table);
+            let addr = env("INTERNAL_IP4_ADDRESS");
+            let ok = net::tun_up(&dev, &addr, &env("INTERNAL_IP4_MTU"), table);
+            // 隧道地址变了，马上换掉"按回程地址认隧道连接"的规则（不等每分钟的自检）
+            let mark = u32::from_str_radix(env("CORPLINE_MARK").trim_start_matches("0x"), 16).unwrap_or(0x5000);
+            net::set_flow(&run_dir, mark, addr.parse().ok());
             let mut s = String::new();
             for k in ["TUNDEV", "INTERNAL_IP4_ADDRESS", "INTERNAL_IP4_MTU", "INTERNAL_IP4_DNS", "CISCO_DEF_DOMAIN", "VPNGATEWAY", "reason"] {
                 s.push_str(&format!("{}={}\n", k, env(k).replace('\n', " ")));

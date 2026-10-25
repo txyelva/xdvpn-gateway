@@ -135,6 +135,8 @@ scenario_kill_oc() {
 	check "设备线路（内核兜底，立即直连）" "$(path lan1 100.64.2.80)" direct
 	local t2=$(wait_state active 240)
 	ok "5 秒后重连，稳定 120 秒后切回：${t2} 秒"
+	local tip=$(rt ip -4 -o addr show dev corp0 | awk '{print $4}' | cut -d/ -f1)
+	check "重连后按回程地址认隧道连接的规则用的是当前隧道地址" "$(rt iptables -t mangle -S CORPLINE_FLOW | grep -c -- "--ctrepldst $tip")" 1
 }
 
 scenario_freeze_oc() {
@@ -585,6 +587,37 @@ scenario_direct_domain() {
 	wait_state active 60 >/dev/null
 }
 
+# 华硕固件（流量识别/加速模块）会改写连接跟踪的 mark：已走隧道的连接不能因此掉线，直连的连接也不能被"带进"隧道
+scenario_ct_mark() {
+	CASE="固件改写连接标记"
+	command -v conntrack >/dev/null || { bad "沙盒缺少 conntrack 工具（apt install conntrack）"; return; }
+	fresh_active
+	local tip=$(rt ip -4 -o addr show dev corp0 | awk '{print $4}' | cut -d/ -f1)
+	check "按回程地址认隧道连接的规则用的是当前隧道地址" "$(rt iptables -t mangle -S CORPLINE_FLOW | grep -c -- "--ctrepldst $tip")" 1
+	check "不再依赖连接标记" "$(rt iptables -t mangle -S | grep -ci connmark)" 0
+	lan1 curl -s -o /dev/null -w '%{http_code} %{size_download}\n' "http://100.64.2.80/big?mb=2&kbps=200" >$S/ctm1.txt 2>&1 &
+	local a=$!
+	lan2 curl -s -o /dev/null -w '%{http_code} %{size_download}\n' "http://100.64.2.80/big?mb=2&kbps=200" >$S/ctm2.txt 2>&1 &
+	local b=$!
+	sleep 1
+	# 每 0.2 秒把所有连接的 mark 改掉：先改成和本插件无关的值，再改成恰好带本插件标记位的值
+	local i
+	for i in $(seq 25); do rt conntrack -U -m 27624 >/dev/null 2>&1; sleep 0.2; done
+	for i in $(seq 25); do rt conntrack -U -m 0x5000 >/dev/null 2>&1; sleep 0.2; done
+	local nm=$(rt conntrack -L -m 0x5000 2>/dev/null | grep -c 'dport=80 ')
+	if [ "$nm" -ge 2 ]; then ok "两条下载的连接 mark 确实被改写（$nm 条）"; else bad "没能改写连接 mark（$nm 条），本项不可信"; fi
+	wait $a $b
+	check "走公司线路的下载在 mark 被改掉后没有中断（2 MB）" "$(cat $S/ctm1.txt)" "200 2097152"
+	check "直连设备的下载在 mark 带上标记位后没有被带进隧道（2 MB）" "$(cat $S/ctm2.txt)" "200 2097152"
+	check "mark 被改后新连接线路" "$(path lan1 100.64.2.80)" tunnel
+	check "mark 被改后直连设备线路" "$(path lan2 100.64.2.80)" direct
+	# 这条规则丢了（或还是旧地址）：守护程序每分钟自检时补回
+	rt iptables -t mangle -F CORPLINE_FLOW
+	local n=0
+	while [ $n -lt 70 ] && [ "$(rt iptables -t mangle -S CORPLINE_FLOW | grep -c -- "--ctrepldst $tip")" != 1 ]; do sleep 1; n=$((n + 1)); done
+	if [ $n -lt 70 ]; then ok "规则被清后 ${n} 秒内补回"; else bad "规则被清后没有补回"; fi
+}
+
 scenario_device_ports() {
 	CASE="设备走公司线路、个别端口直连"
 	fresh_active
@@ -814,7 +847,7 @@ JSON
 	wait_state active 60 >/dev/null
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild ct_mark cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

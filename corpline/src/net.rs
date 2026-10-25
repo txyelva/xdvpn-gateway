@@ -1,13 +1,15 @@
 //! 网络改动（全部可逆、幂等）。启用时建好一次，之后切换线路只改 ipset `corpline_live` 的内容：
 //!
-//! - 新连接在建立那一刻决定走哪条线，并记在连接跟踪上（connmark）；之后这条连接一直走原线路。
-//!   所以切换线路不会打断正在进行的连接（视频会议、下载）。
+//! - 新连接在建立那一刻决定走哪条线；之后按连接实际的出口认它：经隧道出去的连接，回程地址就是隧道地址，
+//!   每个包都按这个继续走隧道。所以切换线路不会打断正在进行的连接（视频会议、下载）。
+//!   不用 connmark 记：华硕固件（流量识别/加速模块）会改写连接跟踪的 mark，记上的会丢、没记的会"带上"。
 //! - 打了标记的包查路由表 88：`default dev corp0`。隧道网卡一消失，这条路由跟着消失，
 //!   内核自动落回主路由表直连 —— 即使守护程序卡死，全家也不会断网。
 
 use crate::config::Config;
 use crate::sys::{self, run, run_ok, run_stdin};
 use std::net::Ipv4Addr;
+use std::path::Path;
 
 pub const SET_LIVE: &str = "corpline_live";
 pub const SET_BYPASS: &str = "corpline_bypass";
@@ -18,6 +20,7 @@ pub const SET_CNIP: &str = "corpline_cnip";
 pub const SET_OVS: &str = "corpline_ovs";
 const CH_MARK: &str = "CORPLINE";
 const CH_NEW: &str = "CORPLINE_NEW";
+const CH_FLOW: &str = "CORPLINE_FLOW";
 const CH_NAT: &str = "CORPLINE_NAT";
 const CH_MSS: &str = "CORPLINE_MSS";
 const CH_GUARD: &str = "CORPLINE_GUARD";
@@ -71,8 +74,12 @@ fn ensure_chain(bin: &str, table: &str, chain: &str) {
 /// 改防火墙的互斥锁：守护程序的定时自检与 N96 钩子（corpline fw）、cleanup 可能同时动同一组链，
 /// 交错执行会把规则顺序搅乱（例如"直连目的地 RETURN"排到"打标记"之后）。进程退出时自动释放。
 pub fn fw_lock(cfg: &Config) -> Option<std::fs::File> {
-    let _ = std::fs::create_dir_all(&cfg.run_dir);
-    let f = std::fs::OpenOptions::new().create(true).write(true).open(cfg.run_dir.join("fw.lock")).ok()?;
+    fw_lock_at(&cfg.run_dir)
+}
+
+fn fw_lock_at(run_dir: &Path) -> Option<std::fs::File> {
+    let _ = std::fs::create_dir_all(run_dir);
+    let f = std::fs::OpenOptions::new().create(true).write(true).open(run_dir.join("fw.lock")).ok()?;
     use std::os::unix::io::AsRawFd;
     unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
     Some(f)
@@ -116,7 +123,34 @@ fn restore_mangle(rules: &str) -> bool {
 }
 
 fn mark(cfg: &Config) -> String {
-    format!("0x{:x}/0x{:x}", cfg.mark, cfg.mark)
+    mark_of(cfg.mark)
+}
+
+fn mark_of(m: u32) -> String {
+    format!("0x{:x}/0x{:x}", m, m)
+}
+
+/// 隧道网卡当前的 IPv4 地址（没连上时没有）
+pub fn tun_addr(dev: &str) -> Option<Ipv4Addr> {
+    let (_, out) = run("ip", &["-4", "-o", "addr", "show", "dev", dev]);
+    out.split_whitespace().skip_while(|w| *w != "inet").nth(1)?.split('/').next()?.parse().ok()
+}
+
+/// 已经从隧道出去的连接（回程地址是隧道地址）：后续每个包都继续走隧道
+fn flow_rules(mark: u32, addr: Option<Ipv4Addr>) -> String {
+    match addr {
+        Some(a) => format!("-A {} -m conntrack --ctrepldst {}/32 -j MARK --set-xmark {}\n", CH_FLOW, a, mark_of(mark)),
+        None => String::new(),
+    }
+}
+
+/// 隧道连上（或重连换了地址）时由连接脚本调用：只换 CORPLINE_FLOW 这一条链
+pub fn set_flow(run_dir: &Path, mark: u32, addr: Option<Ipv4Addr>) -> bool {
+    let _g = fw_lock_at(run_dir);
+    if !run_ok("iptables", &["-t", "mangle", "-L", CH_FLOW, "-n"]) {
+        return false; // 插件规则还没建（或已撤掉）：等 apply_fw 一起建
+    }
+    restore_mangle(&format!("*mangle\n:{} - [0:0]\n{}COMMIT\n", CH_FLOW, flow_rules(mark, addr)))
 }
 
 pub fn create_sets() -> bool {
@@ -138,10 +172,11 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
     let lan = cfg.lan_if.as_str();
     let tun = cfg.tun_if.as_str();
 
-    // mangle：只在新连接时判断，结果记到 connmark；后续包按 connmark 恢复标记。
-    // 两条链用一次 iptables-restore 原子写入，规则顺序不会被并发执行打乱。
+    // mangle：新连接的第一个包在 CORPLINE_NEW 判断走哪条线；之后的包由 CORPLINE_FLOW 按回程地址认出隧道连接。
+    // 三条链用一次 iptables-restore 原子写入，规则顺序不会被并发执行打乱。
+    let flow = flow_rules(cfg.mark, tun_addr(tun));
     let body = |local: bool| {
-        let mut r = format!("*mangle\n:{} - [0:0]\n:{} - [0:0]\n", CH_NEW, CH_MARK);
+        let mut r = format!("*mangle\n:{} - [0:0]\n:{} - [0:0]\n:{} - [0:0]\n", CH_NEW, CH_FLOW, CH_MARK);
         // 发往路由器自己的地址（含 PPPoE 的公网 IP：从家里按公网地址访问自己的端口转发）不走隧道
         if local {
             r.push_str(&format!("-A {} -m addrtype --dst-type LOCAL -j RETURN\n", CH_NEW));
@@ -161,12 +196,14 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
         //   公司内网域名、例外网站（Apple 等用海外解析的）解析出的 IP → 走公司线路，即使它在中国 IP 段里；
         //   其余落在中国 IP 段里的 → 直连（直接连 IP、不查域名的国内 App 也能直连）。
         r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CN));
-        r.push_str(&format!("-A {} -m set --match-set {} dst -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_OVS, SET_LIVE, m));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -m set --match-set {} dst -j MARK --set-xmark {}\n", CH_NEW, SET_OVS, SET_LIVE, m));
         r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_OVS));
         r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CNIP));
-        r.push_str(&format!("-A {} -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_LIVE, m));
-        r.push_str(&format!("-A {} -m state --state NEW -j {}\n", CH_MARK, CH_NEW));
-        r.push_str(&format!("-A {} -m connmark --mark {} -j MARK --set-xmark {}\n", CH_MARK, m, m));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j MARK --set-xmark {}\n", CH_NEW, SET_LIVE, m));
+        r.push_str(&flow);
+        r.push_str(&format!("-A {} -j {}\n", CH_MARK, CH_FLOW));
+        // 还没做过地址转换的新连接才判断（UDP 在收到回包前一直算 NEW，已经从某条线出去了就不再改道）
+        r.push_str(&format!("-A {} -m conntrack --ctstate NEW -m conntrack ! --ctstate SNAT -j {}\n", CH_MARK, CH_NEW));
         r.push_str("COMMIT\n");
         r
     };
@@ -447,7 +484,12 @@ pub fn fw_present(cfg: &Config) -> bool {
     let v6 = !cfg.ipv6_guard
         || !run_ok("ip6tables", &["-t", "filter", "-L", "FORWARD", "-n"])
         || run_ok("ip6tables", &["-t", "filter", "-C", "FORWARD", "-j", CH_V6]);
+    let flow = match tun_addr(&cfg.tun_if) {
+        Some(a) => run_ok("iptables", &["-t", "mangle", "-C", CH_FLOW, "-m", "conntrack", "--ctrepldst", &format!("{}/32", a), "-j", "MARK", "--set-xmark", &mark(cfg)]),
+        None => true,
+    };
     run_ok("iptables", &["-t", "mangle", "-C", "PREROUTING", "-i", &cfg.lan_if, "-j", CH_MARK])
+        && flow
         && run_ok("iptables", &["-t", "mangle", "-C", "FORWARD", "-j", CH_MSS])
         && run_ok("iptables", &["-t", "nat", "-C", "POSTROUTING", "-j", CH_NAT])
         && run_ok("iptables", &["-t", "filter", "-C", "INPUT", "-j", CH_GUARD])
@@ -631,6 +673,7 @@ pub fn cleanup(cfg: &Config) {
     drop_jump("iptables", "filter", "FORWARD", &["-j", CH_GUARD]);
     drop_chain("iptables", "mangle", CH_MARK);
     drop_chain("iptables", "mangle", CH_NEW);
+    drop_chain("iptables", "mangle", CH_FLOW);
     drop_chain("iptables", "mangle", CH_MSS);
     drop_chain("iptables", "nat", CH_NAT);
     drop_chain("iptables", "filter", CH_GUARD);
