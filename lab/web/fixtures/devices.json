@@ -1,0 +1,54 @@
+{
+ "t": 1761390000,
+ "devices": {
+  "F0:2F:4B:12:34:56": {
+   "name": "Mac Studio",
+   "auto": "Mac-Studio",
+   "host": "Mac-Studio",
+   "vendor": "Apple",
+   "random": false
+  },
+  "00:11:32:AB:CD:EF": {
+   "name": "NAS",
+   "auto": "DS920",
+   "host": "DS920",
+   "vendor": "群晖",
+   "random": false
+  },
+  "A4:83:E7:11:22:33": {
+   "name": "iPhone",
+   "auto": "iPhone",
+   "host": "iPhone",
+   "vendor": "Apple",
+   "random": false
+  },
+  "2C:F0:5D:9A:8B:7C": {
+   "name": "Sony 游戏机",
+   "auto": "Sony 游戏机",
+   "host": "",
+   "vendor": "Sony",
+   "random": false
+  },
+  "E8:00:54:12:6A:A5": {
+   "name": "米家智能插座",
+   "auto": "米家智能插座",
+   "host": "cuco-plug-v3_mibt1A2B",
+   "vendor": "",
+   "random": false
+  },
+  "BA:12:53:92:F0:1E": {
+   "name": "iPhone",
+   "auto": "iPhone",
+   "host": "iPhone",
+   "vendor": "Apple",
+   "random": true
+  },
+  "D4:3B:04:66:77:88": {
+   "name": "张倩的 ThinkPad X1 Carbon（公司配的那台）",
+   "auto": "LAPTOP-7H2K9Q",
+   "host": "LAPTOP-7H2K9Q",
+   "vendor": "联想",
+   "random": false
+  }
+ }
+}

@@ -6,7 +6,9 @@
     "F0:2F:4B:12:34:56\tMac Studio\t1",
     "00:11:32:AB:CD:EF\tNAS\t0",
     "B8:27:EB:00:AA:BB\t客厅电视\t0",
-    "8C:85:90:77:88:99\tMac mini\t0\tcorp\t32400,3981,3982-4081"
+    "8C:85:90:77:88:99\tMac mini\t0\tcorp\t32400,3981,3982-4081",
+    "BA:12:53:92:F0:1E\t\t0",
+    "64:A2:F9:0C:1E:2F\t妈妈的手机\t0\tcorp\t"
   ],
   "corpline_overseas_domains": "apple.com,mzstatic.com",
   "corpline_cn_direct": "0",

@@ -3,6 +3,7 @@
 //! 写到 /tmp/upload/corpline_security.json 给网页和 Mac 上的提醒任务读。
 
 use crate::config::{self, Config};
+use crate::devices::Names;
 use crate::net::{self, SET_AL, SET_BAD, SET_BLK, SET_HIT};
 use crate::report::{self, Json};
 use crate::sys;
@@ -104,64 +105,6 @@ fn ports_text(ports: &BTreeSet<u16>) -> String {
         format!("{} 等 {} 个", v.join("、"), ports.len())
     } else {
         v.join("、")
-    }
-}
-
-/// 局域网设备名：网页设备名单里的名字 > DHCP 主机名 > IP
-pub struct Names {
-    by_mac: HashMap<String, String>,
-    ip_mac: HashMap<Ipv4Addr, String>,
-    ip_host: HashMap<Ipv4Addr, String>,
-}
-
-impl Names {
-    pub fn load(cfg: &Config) -> Names {
-        let mut n = Names { by_mac: HashMap::new(), ip_mac: HashMap::new(), ip_host: HashMap::new() };
-        if let Ok(s) = std::fs::read_to_string(&cfg.sec.names_file) {
-            for l in s.lines() {
-                if let Some((mac, name)) = l.split_once('\t') {
-                    if !name.trim().is_empty() {
-                        n.by_mac.insert(mac.to_ascii_uppercase(), name.trim().to_string());
-                    }
-                }
-            }
-        }
-        if let Ok(s) = std::fs::read_to_string(&cfg.sec.leases_file) {
-            for l in s.lines() {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 4 {
-                    if let Ok(ip) = f[2].parse() {
-                        n.ip_mac.insert(ip, f[1].to_ascii_uppercase());
-                        if f[3] != "*" {
-                            n.ip_host.insert(ip, f[3].to_string());
-                        }
-                    }
-                }
-            }
-        }
-        if let Ok(s) = std::fs::read_to_string("/proc/net/arp") {
-            for l in s.lines().skip(1) {
-                let f: Vec<&str> = l.split_whitespace().collect();
-                if f.len() >= 4 && f[3] != "00:00:00:00:00:00" {
-                    if let Ok(ip) = f[0].parse() {
-                        n.ip_mac.insert(ip, f[3].to_ascii_uppercase());
-                    }
-                }
-            }
-        }
-        n
-    }
-
-    pub fn name(&self, ip: Ipv4Addr) -> Option<String> {
-        self.ip_mac.get(&ip).and_then(|m| self.by_mac.get(m)).or_else(|| self.ip_host.get(&ip)).cloned()
-    }
-
-    /// "「NAS」（192.168.50.168）"；不认识写"设备 192.168.50.168 "（带空格，直接接在中文前后）
-    pub fn label(&self, ip: Ipv4Addr) -> String {
-        match self.name(ip) {
-            Some(n) => format!("「{}」（{}）", n, ip),
-            None => format!("设备 {} ", ip),
-        }
     }
 }
 
@@ -398,6 +341,7 @@ impl Guard {
     }
 
     fn write(&self, cfg: &Config, current: &HashMap<(usize, Ipv4Addr), Member>, names: &Names) {
+        let _ = sys::write_atomic(&cfg.status_dir.join("corpline_devices.json"), names.json().as_bytes());
         let now = sys::wall_secs();
         let today = sys::day_number();
         let day_of = |t: u64| (t + 8 * 3600) / 86400;

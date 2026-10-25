@@ -86,6 +86,10 @@ pub struct Sec {
     pub leases_file: PathBuf,
     /// "MAC<TAB>名字" 的设备名单（外壳脚本从网页的设备名单生成）
     pub names_file: PathBuf,
+    /// 华硕网络地图记的设备（主机名、厂商、类型）
+    pub client_db: PathBuf,
+    /// 读华硕里改过的设备名的命令（输出 custom_clientlist 格式）；空 = 不读
+    pub nick_cmd: String,
     pub poll_secs: u32,
 }
 
@@ -275,6 +279,8 @@ impl Config {
                 bad_list: PathBuf::from(s("sec_bad_list", "/koolshare/configs/corpline/bad-ips.netset")),
                 leases_file: PathBuf::from(s("leases_file", "/var/lib/misc/dnsmasq.leases")),
                 names_file: PathBuf::from(s("names_file", "/var/run/corpline/devices.tsv")),
+                client_db: PathBuf::from(s("client_db", "/jffs/nmp_cl_json.js")),
+                nick_cmd: s("nick_cmd", "nvram get custom_clientlist"),
                 poll_secs: num(g("sec_poll_secs"), 30).clamp(1, 600),
             },
         };

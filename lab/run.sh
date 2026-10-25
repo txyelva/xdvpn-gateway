@@ -760,7 +760,61 @@ scenario_security() {
 	wait_state active 60 >/dev/null
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports security resources nasty upgrade bootloop disable_uninstall"
+# 设备名字：华硕网络地图、华硕里改过的名字、插件别名合起来认设备；改名不改线路、不重启
+dev_json() { jq -r "$1" /tmp/upload/corpline_devices.json 2>/dev/null; }
+dev_name() { rt /koolshare/bin/corpline devices -c /var/run/corpline/corpline.conf | awk -F'\t' -v m="$1" '$1 == m {print $2}'; }
+scenario_devices() {
+	CASE="设备名字"
+	fresh_active
+	local L=/koolshare/configs/corpline/lab.conf D=/tmp/lab/devnames keep_dev=$(/koolshare/bin/dbus get corpline_devices) p0 i
+	cp $L $S/lab.conf.bak
+	mkdir -p $D
+	# 假的华硕数据：lan1 是米家插座（随机 MAC），另有一台荣耀手机、一台没报主机名的 Sony 游戏机
+	cat >$D/nmp.js <<'JSON'
+{"02:00:00:00:01:00":{"mac":"02:00:00:00:01:00","name":"cuco-plug-v3_mibt1A2B","vendor":"","type":70,"online":1},
+ "00:11:22:00:00:01":{"mac":"00:11:22:00:00:01","name":"HONOR_X40-1a2b3c4d5e","vendor":"Others","type":34,"list":[1,{"x":"y"}]},
+ "00:11:22:00:00:02":{"mac":"00:11:22:00:00:02","name":"","vendor":"Sony Corporation","type":7}}
+JSON
+	printf '<小王的手机>00:11:22:00:00:01>0>0>><Nintendo Co  Ltd>00:11:22:00:00:02>0>0>>' >$D/nick.txt
+	printf '%s\n' "client_db=$D/nmp.js" "nick_cmd=cat $D/nick.txt" sec_poll_secs=2 >>$L
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t1\n' | base64 -w0)
+	api 1
+	wait_state active 60 >/dev/null
+	for i in $(seq 10); do [ -n "$(dev_json '.devices["02:00:00:00:01:00"].name')" ] && break; sleep 1; done
+	check "主机名认出品类" "$(dev_json '.devices["02:00:00:00:01:00"] | "\(.name)/\(.host)/\(.random)"')" "米家智能插座/cuco-plug-v3_mibt1A2B/true"
+	check "华硕里改过的名字优先" "$(dev_json '.devices["00:11:22:00:00:01"] | "\(.name)/\(.auto)/\(.random)"')" "小王的手机/荣耀 X40/false"
+	check "没主机名用厂商和类型；公司全称不当名字" "$(dev_json '.devices["00:11:22:00:00:02"] | "\(.name)/\(.vendor)"')" "Sony 游戏机/Sony"
+	check "安全提醒用的名字（锁定的管理电脑用别名）" "$(dev_name 02:00:00:00:02:00)" "Mac Studio"
+	check "安全提醒用的名字（没起别名用认出来的）" "$(dev_name 02:00:00:00:01:00)" "米家智能插座"
+
+	# 网页里给 lan1 起别名：只改名字，线路照旧走公司，守护程序不重启
+	p0=$(cl_pid)
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t1\n02:00:00:00:01:00\t鱼缸插座\t0\tcorp\t\n' | base64 -w0)
+	api 4
+	sleep 3
+	check "起别名后的名字" "$(dev_name 02:00:00:00:01:00)" "鱼缸插座"
+	check "起别名没有重启守护程序" "$(cl_pid)" "$p0"
+	check "起别名不改线路" "$(path lan1 100.64.2.80)" tunnel
+	check "起别名不进直连名单" "$(grep -c '02:00:00:00:01:00' <(grep '^direct_\(macs\|ports\)=' /var/run/corpline/corpline.conf))" 0
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t1\n' | base64 -w0)
+	api 4
+	sleep 3
+	check "清掉别名恢复认出来的名字" "$(dev_name 02:00:00:00:01:00)" "米家智能插座"
+
+	# 华硕的文件坏了：不影响守护程序，名字退回能认的部分
+	printf '{"02:00:00:00:01:00":{"name":"x"' >$D/nmp.js
+	sleep 4
+	check "华硕文件损坏时守护程序照常" "$(cl_pid)" "$p0"
+	check "华硕文件损坏时的名字" "$(dev_json '.devices["00:11:22:00:00:01"].name')" "小王的手机"
+
+	# 收尾
+	dbset corpline_devices=$keep_dev
+	cp $S/lab.conf.bak $L
+	api 1
+	wait_state active 60 >/dev/null
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

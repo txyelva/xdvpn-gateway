@@ -8,6 +8,7 @@
 //!   corpline version
 
 mod config;
+mod devices;
 mod dns;
 mod guard;
 mod machine;
@@ -61,12 +62,18 @@ fn main() {
             net::cleanup(&c);
             0
         }
+        "devices" => {
+            // 只读：列出每台设备认出来的名字，排查"为什么叫这个名字"用
+            let c = Config::load(&conf).ok().unwrap_or_else(fallback_cfg);
+            print!("{}", devices::Names::load(&c).table());
+            0
+        }
         "version" | "-V" | "--version" => {
             println!("corpline {}", VERSION);
             0
         }
         _ => {
-            eprintln!("用法：corpline run|hook|fw|cleanup|version [-c 配置文件]");
+            eprintln!("用法：corpline run|hook|fw|cleanup|devices|version [-c 配置文件]");
             2
         }
     };

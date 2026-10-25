@@ -13,6 +13,7 @@
     noclients=1                                                          模拟读不到在线设备列表
     /_temp/corpline_domains.json                                         最近访问的网站（fixtures/domains.json；插件没运行时 404）
     sec=busy|quiet|error|starting                                        安全防护：有封锁和记录 / 什么都没发生 / 没生效 / 刚启动
+    /_temp/corpline_devices.json                                         守护程序认出来的设备名字（fixtures/devices.json）
     /_temp/corpline_security.json                                        安全防护状态（fixtures/security.json；插件没运行时是关闭后的样子）
     net=login|down                                                       模拟登录过期（状态和 dbus 回登录页）/ 路由器连不上（503）
     /_lab/net?m=ok|login|down                                            页面开着时切换上面的模拟
@@ -346,6 +347,10 @@ class H(BaseHTTPRequestHandler):
             if self.net_down():
                 return
             return self.json(current_security())
+        if p == "/_temp/corpline_devices.json":
+            if STATE["noclients"]:
+                return self.send(404, "not found")
+            return self.file(os.path.join(FIX, "devices.json"), "application/json")
         if p == "/_temp/corpline_log.txt":
             return self.file(os.path.join(FIX, "corpline_log.txt"), "text/plain; charset=utf-8")
         if p == "/appGet.cgi":

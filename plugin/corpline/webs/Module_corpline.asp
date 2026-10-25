@@ -177,6 +177,10 @@
 .cl .cl-dev .cl-seg{flex:none}
 .cl .cl-dev-r{display:flex;align-items:center;gap:16px;flex:none}
 .cl .cl-dev .cl-dev-p{color:var(--t2)}
+.cl .cl-dev .cl-dev-w{color:var(--t2);max-width:560px}
+.cl .cl-dev .cl-dev-n{word-break:normal}
+.cl .cl-dev .cl-nw{font-style:normal;white-space:nowrap}
+.cl .cl-dev.off .cl-dev-n{color:var(--t2)}
 /* 「直连端口」入口只在指到这一行或键盘移到这一行时出现，一列看下来不重复；已填端口的行一直显示「修改端口」 */
 .cl .cl-dev .cl-lnk.pe{opacity:0;transition:opacity var(--d-fast) var(--ease),color var(--d-fast) var(--ease)}
 .cl .cl-dev:hover .cl-lnk.pe,.cl .cl-dev:focus-within .cl-lnk.pe,.cl .cl-dev .cl-lnk.pe[aria-expanded="true"]{opacity:1}
@@ -241,6 +245,7 @@ var CL = (function () {
 	var net = { okAt: Date.now(), fails: 0 };   // 最近一次读到路由器的时间、之后连续失败的次数
 	var polling = false, pollSoon = 0, waitPoll = false;
 	var clients = null;          // {MAC:{name, ip, online}}，取不到为 null
+	var devInfo = {};            // 守护程序认出来的设备：{MAC:{name, auto, host, vendor, random}}（/_temp/corpline_devices.json）
 	var clientsFailed = false;
 	var shown = { key: null, act: null, desc: null, tl: null };
 	var edit = {};               // 各设置行未保存的改动
@@ -426,12 +431,16 @@ var CL = (function () {
 				for (k in src) {
 					if (!src.hasOwnProperty(k) || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(k)) continue;
 					c = src[k] || {};
-					map[k.toUpperCase()] = { name: trim(c.nickName) || trim(c.name) || '', ip: c.ip || '', online: c.isOnline === undefined ? true : String(c.isOnline) === '1' };
+					map[k.toUpperCase()] = { name: trim(c.nickName) || trim(c.name) || '', host: trim(c.name), vendor: trim(c.vendor), ip: c.ip || '', online: c.isOnline === undefined ? true : String(c.isOnline) === '1' };
 					n++;
 				}
 			}
 			if (n) { clients = map; clientsFailed = false; } else { clients = null; clientsFailed = true; }
 			renderDevices();
+		});
+		// 读不到（插件没运行过）就用华硕给的名字
+		getJSON('/_temp/corpline_devices.json', function (code, o) {
+			if (o && o.devices && typeof o.devices === 'object') { devInfo = o.devices; renderDevices(); }
 		});
 	}
 	function clientByIp(ip) {
@@ -804,7 +813,11 @@ var CL = (function () {
 	}
 	/* 家里的设备：在线设备 + 直连名单里不在线的设备，每台选走哪条线 */
 	function devList() { return edit.devices || parseDevices(db.corpline_devices); }
-	function devName(d, c) { return (d && d.name && d.name !== LOCK_NAME && d.name) || (c && c.name) || ''; }
+	// 名字：这里起的别名 > 华硕里改过的名字或自动认出来的（守护程序整理）> 华硕给的名字
+	function aliasOf(d) { return d && d.name && d.name !== LOCK_NAME ? d.name : ''; }
+	function autoName(mac, c) { var x = devInfo[mac]; return x && x.name || c && c.name || x && x.host || ''; }
+	function devName(d, c, mac) { return aliasOf(d) || autoName(mac || d && d.mac, c); }
+	function isRandomMac(m) { return !!m && (parseInt(m.slice(0, 2), 16) & 2) === 2; }
 	// 按名字排：英文名在前（不分大小写），中文名其次，没有名字的最后
 	function byName(a, b) {
 		function grp(n) { return !n ? 2 : /^[\x00-\x7f]/.test(n) ? 0 : 1; }
@@ -824,7 +837,7 @@ var CL = (function () {
 		// 管理电脑：已锁定的那行；还没开启过就用登录后台的这台电脑占位，开启时自动加入
 		for (i = 0; i < list.length; i++) if (list[i].locked) {
 			c = clients && clients[list[i].mac];
-			pinned.push({ mac: list[i].mac, name: devName(list[i], c) || '这台电脑', ip: c && c.ip || '', online: !c || c.online, locked: true });
+			pinned.push({ mac: list[i].mac, name: devName(list[i], c) || '这台电脑', ip: c && c.ip || '', online: !c || c.online, locked: true, alias: aliasOf(list[i]) });
 			seen[list[i].mac] = 1;
 		}
 		if (!pinned.length && ADMIN_IP) {
@@ -833,7 +846,7 @@ var CL = (function () {
 			if (me) seen[me.mac] = 1;
 		}
 		if (clients) for (k in clients) if (clients.hasOwnProperty(k) && clients[k].online && !seen[k]) {
-			online.push({ mac: k, name: devName(rule[k], clients[k]), ip: clients[k].ip, online: true, direct: isDirect(k), ports: portsOf(k) });
+			online.push({ mac: k, name: devName(rule[k], clients[k], k), ip: clients[k].ip, online: true, direct: isDirect(k), ports: portsOf(k), alias: aliasOf(rule[k]) });
 			seen[k] = 1;
 		}
 		// 不在线但在直连名单里的设备（含刚切回公司线路、还没保存的），规则不能丢
@@ -841,7 +854,7 @@ var CL = (function () {
 		for (i = 0; i < cand.length; i++) {
 			d = cand[i]; if (seen[d.mac] || d.locked) continue;
 			c = clients && clients[d.mac];
-			offline.push({ mac: d.mac, name: devName(rule[d.mac] || d, c), ip: c && c.ip || '', online: false, unknown: !clients, direct: isDirect(d.mac), ports: portsOf(d.mac) });
+			offline.push({ mac: d.mac, name: devName(rule[d.mac] || d, c, d.mac), ip: c && c.ip || '', online: false, unknown: !clients, direct: isDirect(d.mac), ports: portsOf(d.mac), alias: aliasOf(rule[d.mac] || d) });
 			seen[d.mac] = 1;
 		}
 		online.sort(byName); offline.sort(byName);
@@ -853,27 +866,50 @@ var CL = (function () {
 			h += '<button type="button" role="radio" aria-checked="' + (opts[i][0] === cur) + '" data-v="' + opts[i][0] + '"' + attr + '>' + opts[i][1] + '</button>';
 		return h + '</div>';
 	}
+	// 名字下面一行（HTML）：IP · MAC · 设备自己报的主机名（和显示的名字不同时，方便核对认得对不对）· 随机 MAC
+	function simple(t) { return String(t || '').toLowerCase().replace(/[^0-9a-z\u4e00-\u9fff]/g, ''); }
+	function devSub(d) {
+		var x = devInfo[d.mac] || {}, c = clients && clients[d.mac], host = x.host || c && c.host || '', p = [d.ip, d.mac];
+		if (host && simple(host) !== simple(d.name)) p.push(host);
+		if (isRandomMac(d.mac)) p.push('随机 MAC');
+		if (!d.online && !d.unknown) p.push('不在线');
+		// 每一段不拆开换行，窄的时候整段挪到下一行，分隔点留在上一行末尾
+		return p.filter(function (v) { return !!v; }).map(function (v) { return '<i class="cl-nw">' + esc(v) + '</i>'; }).join('\u00a0· ');
+	}
+	function nameEditor(d) {
+		var auto = autoName(d.mac, clients && clients[d.mac]) || (d.locked ? '这台电脑' : '');
+		return '<div class="cl-pe"><div class="cl-pe-in"><input class="cl-in" id="clDevAlias" value="' + esc(d.alias || '') + '" placeholder="' + esc(auto || '给这台设备起个名字') +
+			'" aria-label="' + esc((d.name || d.mac) + ' 的名字') + '" maxlength="32" data-amac="' + d.mac + '">' +
+			'<button type="button" class="cl-btn sec" id="clDevAliasOk" data-amac="' + d.mac + '">完成</button></div>' +
+			'<p class="cl-hint">名字按 MAC 地址记在这台路由器上，设备列表和安全提醒里都用它，不改这台设备走哪条线。' +
+			(auto ? '清空后用自动认出的「' + esc(auto) + '」。' : '') + '</p></div>';
+	}
 	function renderDevices() {
 		if (!dbLoaded) { renderLock(false); return; }
-		var r = devRows(), h = '', i, d, sub, right;
+		var r = devRows(), h = '', i, d, sub, right, warn, nm;
 		for (i = 0; i < r.rows.length; i++) {
 			d = r.rows[i];
-			sub = [d.ip, d.mac].filter(function (x) { return !!x; }).join(' · ');
-			if (!d.online && !d.unknown) sub += ' · 不在线';
+			sub = devSub(d);
+			// 点名字改名（不占右边的位置，窄屏也不挤）
+			nm = d.mac ? '<button type="button" class="cl-dname cl-dev-n" data-amac="' + d.mac + '" aria-expanded="' + (nameOpen === d.mac) + '" title="改名">' + esc(d.name || '未命名设备') + '</button>' : '<b>' + esc(d.name) + '</b>';
+			// 按 MAC 记的设置遇上随机 MAC：地址一变就对不上了，提前说清楚
+			warn = isRandomMac(d.mac) && (d.locked || d.direct || d.ports) ? '<span class="cl-dev-w">地址可能会变，变了这条设置就失效；可在它的 Wi‑Fi 设置里关掉「私有地址」。</span>' : '';
 			if (d.locked) {
 				right = '<span class="tag">固定直连</span>';
-				h += '<div class="cl-dev"><div><b>' + esc(d.name) + '</b><span class="cl-num">' + esc(sub) + '</span><span>' +
-					(d.later ? '管理这台路由器的电脑，开启时自动加入直连，保证随时能打开后台' : '管理这台路由器的电脑，保证随时能打开后台') + '</span></div>' + right + '</div>';
+				h += '<div class="cl-dev"><div>' + nm + '<span class="cl-num">' + sub + '</span><span>' +
+					(d.later ? '管理这台路由器的电脑，开启时自动加入直连，保证随时能打开后台' : '管理这台路由器的电脑，保证随时能打开后台') + '</span>' + warn + '</div>' + right +
+					(nameOpen === d.mac ? nameEditor(d) : '') + '</div>';
 			} else {
 				var open = portsOpen === d.mac && !d.direct;
 				right = '<div class="cl-dev-r">' + (d.direct ? '' : '<button type="button" class="cl-lnk' + (d.ports ? '' : ' pe') + '" data-pmac="' + d.mac + '" aria-expanded="' + open + '">' + (d.ports ? '修改端口' : '直连端口') + '</button>') +
 					seg((d.name || d.mac) + ' 走哪条线', d.direct ? 'direct' : 'corp', [['corp', '公司线路'], ['direct', '直连']], ' data-mac="' + d.mac + '"') + '</div>';
-				h += '<div class="cl-dev' + (d.online ? '' : ' off') + '"><div><b>' + esc(d.name || '未命名设备') + '</b><span class="cl-num">' + esc(sub) + '</span>' +
-					(d.ports ? '<span class="cl-num cl-dev-p">' + esc(portsText(d.ports)) + ' 端口直连，其余走公司线路</span>' : '') + '</div>' + right +
+				h += '<div class="cl-dev' + (d.online ? '' : ' off') + '"><div>' + nm + '<span class="cl-num">' + sub + '</span>' +
+					(d.ports ? '<span class="cl-num cl-dev-p">' + esc(portsText(d.ports)) + ' 端口直连，其余走公司线路</span>' : '') + warn + '</div>' + right +
 					(open ? '<div class="cl-pe"><div class="cl-pe-in"><input class="cl-in cl-num" id="clDevPorts" value="' + esc(portsText(d.ports).replace(/、/g, ', ').replace(/–/g, '-')) +
 						'" placeholder="例如 32400, 3981, 3982-4081" aria-label="' + esc((d.name || d.mac) + ' 直连的端口') + '" spellcheck="false" data-pmac="' + d.mac + '">' +
 						'<button type="button" class="cl-btn sec" id="clDevPortsOk" data-pmac="' + d.mac + '">完成</button></div>' +
-						'<p class="cl-hint">填这台设备上程序用的端口，用逗号隔开，可以写一段（3982-4081）。从这些端口发出的连接直连，其余仍走公司线路。清空后点完成即取消。</p></div>' : '') + '</div>';
+						'<p class="cl-hint">填这台设备上程序用的端口，用逗号隔开，可以写一段（3982-4081）。从这些端口发出的连接直连，其余仍走公司线路。清空后点完成即取消。</p></div>' : '') +
+					(nameOpen === d.mac ? nameEditor(d) : '') + '</div>';
 			}
 		}
 		if (!h) h = '<div class="cl-dev empty">读不到在线设备。家里的设备默认都走公司线路。</div>';
@@ -883,6 +919,8 @@ var CL = (function () {
 		for (i = 0; i < btns.length; i++) btns[i].onclick = setDeviceRoute;
 		btns = $i('clDevList').querySelectorAll('.cl-lnk[data-pmac]');
 		for (i = 0; i < btns.length; i++) btns[i].onclick = togglePorts;
+		btns = $i('clDevList').querySelectorAll('button.cl-dname[data-amac]');
+		for (i = 0; i < btns.length; i++) btns[i].onclick = toggleName;
 		var pin = $i('clDevPorts');
 		if (pin) {
 			$i('clDevPortsOk').onclick = savePorts;
@@ -892,35 +930,79 @@ var CL = (function () {
 				else if (k === 27) { portsOpen = ''; msg('devices', ''); renderDevices(); focusPortsLink(this.getAttribute('data-pmac')); }
 			};
 		}
+		var ain = $i('clDevAlias');
+		if (ain) {
+			$i('clDevAliasOk').onclick = saveAlias;
+			ain.onkeydown = function (e) {
+				var k = (e || window.event).keyCode;
+				if (k === 13) saveAlias();
+				else if (k === 27) { nameOpen = ''; msg('devices', ''); renderDevices(); focusLink('amac', this.getAttribute('data-amac')); }
+			};
+		}
 		// 不在线的设备手动填 MAC；读不到在线设备时直接展开
 		var manual = clientsFailed || devManual;
 		$i('clDevManual').hidden = !manual;
 		$i('clDevManualBtn').hidden = manual;
 		$i('clDevNote').hidden = !manual;
 		$i('clDevNote').textContent = (clientsFailed ? '读不到路由器的在线设备列表，请手动填写。' : '') + 'MAC 地址形如 AA:BB:CC:DD:EE:FF，可以在「网络地图 › 客户端」里找到。';
-		setPend('devices', !!edit.devices && encodeDevices(edit.devices) !== (db.corpline_devices || ''));
+		var changed = !!edit.devices && encodeDevices(edit.devices) !== (db.corpline_devices || '');
+		setPend('devices', changed);
+		if (changed && namesOnly()) $i('clPend-devices').getElementsByClassName('cl-pend-hint')[0].textContent = '只改了名字，不会重新连接。';
 	}
-	var devManual = false, portsOpen = '';
+	// 线路相关的部分（谁直连、哪些端口直连）；只有名字不同 = 只改了名字
+	function routeSig(list) {
+		var a = [], i, d;
+		for (i = 0; i < list.length; i++) {
+			d = list[i];
+			if (d.locked || d.route !== 'corp' || d.ports) a.push(d.mac + '|' + (d.locked ? 1 : 0) + '|' + d.route + '|' + d.ports);
+		}
+		return a.sort().join(',');
+	}
+	function namesOnly() { return !!edit.devices && routeSig(edit.devices) === routeSig(parseDevices(db.corpline_devices)); }
+	var devManual = false, portsOpen = '', nameOpen = '';
 	// 改一台设备的规则（线路或直连端口）；走公司线路又没填端口的设备不用记
 	function setDevRule(mac, route, ports) {
-		var list = devList(), out = [], i, d = null, c = clients && clients[mac];
+		var list = devList(), out = [], i, d = null;
 		for (i = 0; i < list.length; i++) if (list[i].mac === mac) d = list[i]; else out.push(list[i]);
 		if (!d) {
-			var keep = parseDevices(db.corpline_devices), nm = c && c.name || '';
+			// 只带上起过的别名；没起过就留空，显示时用自动认出的名字
+			var keep = parseDevices(db.corpline_devices), nm = '';
 			for (i = 0; i < keep.length; i++) if (keep[i].mac === mac && keep[i].name) nm = keep[i].name;
 			d = { mac: mac, name: nm, locked: false, route: 'corp', ports: '' };
 		}
 		d = { mac: d.mac, name: d.name, locked: d.locked, route: route || d.route, ports: ports === undefined ? d.ports : ports };
-		if (d.route === 'direct' || d.ports) out.push(d);
+		if (d.route === 'direct' || d.ports || aliasOf(d)) out.push(d);
 		edit.devices = out;
 	}
-	function focusPortsLink(mac) {
-		var el = $i('clDevList').querySelector('.cl-lnk[data-pmac="' + mac + '"]');
+	// 起别名 / 清掉别名；只改名字，不动线路（锁定的管理电脑清空后回到占位名）
+	function setDevAlias(mac, name) {
+		var list = devList(), out = [], i, d = null;
+		for (i = 0; i < list.length; i++) if (list[i].mac === mac) d = list[i]; else out.push(list[i]);
+		if (!d) d = { mac: mac, name: '', locked: false, route: 'corp', ports: '' };
+		d = { mac: d.mac, name: name || (d.locked ? LOCK_NAME : ''), locked: d.locked, route: d.route, ports: d.ports };
+		if (d.locked || d.route === 'direct' || d.ports || aliasOf(d)) out.push(d);
+		edit.devices = out;
+	}
+	function focusLink(attr, mac) {
+		var el = $i('clDevList').querySelector((attr === 'amac' ? 'button.cl-dname' : '.cl-lnk') + '[data-' + attr + '="' + mac + '"]');
 		if (el) try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+	}
+	function focusPortsLink(mac) { focusLink('pmac', mac); }
+	function toggleName() {
+		var mac = this.getAttribute('data-amac');
+		nameOpen = nameOpen === mac ? '' : mac; portsOpen = ''; msg('devices', ''); renderDevices();
+		if (nameOpen) { var el = $i('clDevAlias'); if (el) { el.focus(); el.setSelectionRange && el.setSelectionRange(el.value.length, el.value.length); } }
+		else focusLink('amac', mac);
+	}
+	function saveAlias() {
+		var el = $i('clDevAlias'), mac = el.getAttribute('data-amac'), name = trim(el.value.replace(/[\t\r\n]/g, ' '));
+		if (name === LOCK_NAME) name = '';
+		setDevAlias(mac, name);
+		nameOpen = ''; msg('devices', ''); renderDevices(); focusLink('amac', mac);
 	}
 	function togglePorts() {
 		var mac = this.getAttribute('data-pmac');
-		portsOpen = portsOpen === mac ? '' : mac; msg('devices', ''); renderDevices();
+		portsOpen = portsOpen === mac ? '' : mac; nameOpen = ''; msg('devices', ''); renderDevices();
 		if (portsOpen) { var el = $i('clDevPorts'); if (el) { el.focus(); el.setSelectionRange && el.setSelectionRange(el.value.length, el.value.length); } }
 		else focusPortsLink(mac);
 	}
@@ -945,7 +1027,6 @@ var CL = (function () {
 		name = trim($i('clDevName').value);
 		if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { bad('clDevMac', 'devices', 'MAC 地址的格式不对。'); return; }
 		for (i = 0; i < list.length; i++) if (list[i].mac === mac && list[i].route !== 'corp') { bad('clDevMac', 'devices', '这台设备已经设成直连了。'); return; }
-		if (clients && clients[mac] && clients[mac].online && !name) name = clients[mac].name;
 		setDevRule(mac, 'direct');
 		if (name) for (list = devList(), i = 0; i < list.length; i++) if (list[i].mac === mac) list[i].name = name;
 		msg('devices', '');
@@ -1336,8 +1417,8 @@ var CL = (function () {
 			over.corpline_isp_dns = dns; over.corpline_sensitivity = $i('f-sens').value || a.sens;
 			after = function () { edit.adv = null; };
 		}
-		// 通知设置在发送时才读取、白名单由守护程序自己更新：只保存不重连；其余设置会影响线路，保存后重连
-		var action = which === 'notify' || which === 'guard' && !restart ? 4 : 1;
+		// 通知设置在发送时才读取、白名单和设备名字由守护程序自己更新：只保存不重连；其余设置会影响线路，保存后重连
+		var action = which === 'notify' || which === 'guard' && !restart || which === 'devices' && namesOnly() ? 4 : 1;
 		var btn = $i('clSave-' + which);
 		btn.disabled = true; msg(which, '正在保存…');
 		submit(action, over, function (ok) {
@@ -1354,7 +1435,7 @@ var CL = (function () {
 	function undoRow(which) {
 		edit[which] = which === 'account' ? false : null;
 		msg(which, '');
-		if (which === 'devices') { $i('clDevMac').value = ''; $i('clDevName').value = ''; portsOpen = ''; }
+		if (which === 'devices') { $i('clDevMac').value = ''; $i('clDevName').value = ''; portsOpen = ''; nameOpen = ''; }
 		if (which === 'domains') $i('clDomIn').value = '';
 		if (which === 'guard') $i('clGNet').value = '';
 		renderSettings();
@@ -1613,7 +1694,7 @@ function menu_hook() {
         <div class="cl-add" id="clDevManual" hidden><input class="cl-in" id="clDevName" placeholder="名字，例如 NAS" aria-label="设备名字"><input class="cl-in cl-num" id="clDevMac" placeholder="MAC 地址" aria-label="MAC 地址" spellcheck="false"><button type="button" class="cl-btn sec" id="clDevAddM">设为直连</button></div>
         <p class="cl-msg err cl-rowmsg" id="clMsg-devices" role="status"></p>
         <p class="cl-hint" id="clDevNote" hidden></p>
-        <p class="cl-hint">直连的设备不走公司线路，直接用家里宽带上网。</p>
+        <p class="cl-hint">直连的设备不走公司线路，直接用家里宽带上网。点设备名字可以改名。</p>
         <div class="cl-pend" id="clPend-devices" aria-hidden="true"><div><div class="cl-acts"><button type="button" class="cl-btn pri" id="clSave-devices" tabindex="-1">保存</button><button type="button" class="cl-btn sec" id="clUndo-devices" tabindex="-1">撤销</button><span class="cl-msg cl-pend-hint"></span></div></div></div>
       </div></div></div>
     </div>
