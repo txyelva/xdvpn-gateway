@@ -191,6 +191,11 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
                 r.push_str(&format!("-A {} -m mac --mac-source {} -p {} --sport {}:{} -j RETURN\n", CH_NEW, mac, proto, a, b));
             }
         }
+        // 苹果推送（APNs）的长连接固定直连，原因见 dns::plan::always_direct；按端口认，手机自己缓存了地址、
+        // 没经过这里的 DNS 也能认出来（443 上的备用连接靠域名认）
+        for port in ["5223", "2197"] {
+            r.push_str(&format!("-A {} -d 17.0.0.0/8 -p tcp --dport {} -j RETURN\n", CH_NEW, port));
+        }
         // 国内直连（开关关闭时这三个集合都是空的）：
         //   中国服务名单里的网站 → 直连；
         //   公司内网域名、例外网站（Apple 等用海外解析的）解析出的 IP → 走公司线路，即使它在中国 IP 段里；

@@ -699,6 +699,30 @@ s.ThreadingTCPServer(("100.64.2.80", 9000), H).serve_forever()' >/dev/null 2>&1 
 	check "重新应用设置后不再限速" "$(rt tc qdisc show dev corp0 | grep -c htb)" 0
 }
 
+# 苹果推送（APNs）的长连接固定直连：走公司线路会被公司防火墙空闲超时、隧道重连悄悄断掉，通知收不到
+scenario_apns() {
+	CASE="苹果推送直连"
+	fresh_active
+	wan ip addr add 17.57.145.200/32 dev dummy0 2>/dev/null
+	for p in 5223 2197 443; do
+		(wan python3 -c "import http.server as h
+class H(h.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        b = ('apns ' + self.client_address[0]).encode()
+        self.send_response(200); self.send_header('Content-Length', str(len(b))); self.end_headers(); self.wfile.write(b)
+h.ThreadingHTTPServer(('17.57.145.200', $p), H).serve_forever()" >/dev/null 2>&1 &)
+	done
+	sleep 1
+	local p
+	for p in 5223 2197; do check "苹果推送端口 $p 直连" "$(path lan1 17.57.145.200:$p)" direct; done
+	check "同一地址的其它端口仍走公司线路" "$(path lan1 17.57.145.200:443)" tunnel
+	check "按端口认推送连接的规则在" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -c -- '-d 17.0.0.0/8 -p tcp -m tcp --dport 5223 -j RETURN')" 1
+	pkill -f "17.57.145.200"
+	wan ip addr del 17.57.145.200/32 dev dummy0 2>/dev/null
+	true
+}
+
 scenario_device_ports() {
 	CASE="设备走公司线路、个别端口直连"
 	fresh_active
@@ -928,7 +952,7 @@ JSON
 	wait_state active 60 >/dev/null
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild ct_mark upload_flood cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild ct_mark upload_flood apns cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"
