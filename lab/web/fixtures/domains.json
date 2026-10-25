@@ -1,0 +1,372 @@
+{
+ "v": 1,
+ "updated": 0,
+ "items": [
+  {
+   "d": "finder.video.qq.com",
+   "t": -4,
+   "n": 86,
+   "c": "corp"
+  },
+  {
+   "d": "wxapp.tc.qq.com",
+   "t": -9,
+   "n": 41,
+   "c": "corp"
+  },
+  {
+   "d": "szextshort.weixin.qq.com",
+   "t": -12,
+   "n": 233,
+   "c": "corp"
+  },
+  {
+   "d": "channels.weixin.qq.com",
+   "t": -20,
+   "n": 57,
+   "c": "corp"
+  },
+  {
+   "d": "mmbiz.qpic.cn",
+   "t": -31,
+   "n": 148,
+   "c": "corp"
+  },
+  {
+   "d": "upos-sz-mirrorcos.bilivideo.com",
+   "t": -45,
+   "n": 312,
+   "c": "corp"
+  },
+  {
+   "d": "api.bilibili.com",
+   "t": -52,
+   "n": 96,
+   "c": "corp"
+  },
+  {
+   "d": "i0.hdslb.com",
+   "t": -58,
+   "n": 204,
+   "c": "corp"
+  },
+  {
+   "d": "www.bilibili.com",
+   "t": -75,
+   "n": 12,
+   "c": "corp"
+  },
+  {
+   "d": "gitlab.xindong.com",
+   "t": -90,
+   "n": 38,
+   "c": "internal"
+  },
+  {
+   "d": "wiki.xindong.com",
+   "t": -130,
+   "n": 9,
+   "c": "internal"
+  },
+  {
+   "d": "jira.xindong.com",
+   "t": -170,
+   "n": 14,
+   "c": "internal"
+  },
+  {
+   "d": "github.com",
+   "t": -200,
+   "n": 22,
+   "c": "corp"
+  },
+  {
+   "d": "objects.githubusercontent.com",
+   "t": -205,
+   "n": 7,
+   "c": "corp"
+  },
+  {
+   "d": "api.github.com",
+   "t": -220,
+   "n": 31,
+   "c": "corp"
+  },
+  {
+   "d": "www.apple.com",
+   "t": -260,
+   "n": 5,
+   "c": "overseas"
+  },
+  {
+   "d": "is1-ssl.mzstatic.com",
+   "t": -280,
+   "n": 63,
+   "c": "overseas"
+  },
+  {
+   "d": "gateway.icloud.com",
+   "t": -300,
+   "n": 118,
+   "c": "corp"
+  },
+  {
+   "d": "p52-caldav.icloud.com",
+   "t": -340,
+   "n": 16,
+   "c": "corp"
+  },
+  {
+   "d": "www.google.com",
+   "t": -380,
+   "n": 11,
+   "c": "corp"
+  },
+  {
+   "d": "fonts.gstatic.com",
+   "t": -390,
+   "n": 27,
+   "c": "corp"
+  },
+  {
+   "d": "www.youtube.com",
+   "t": -420,
+   "n": 8,
+   "c": "corp"
+  },
+  {
+   "d": "rr3---sn-oguelnzl.googlevideo.com",
+   "t": -430,
+   "n": 141,
+   "c": "corp"
+  },
+  {
+   "d": "v.qq.com",
+   "t": -500,
+   "n": 6,
+   "c": "corp"
+  },
+  {
+   "d": "vd6.l.qq.com",
+   "t": -510,
+   "n": 92,
+   "c": "corp"
+  },
+  {
+   "d": "puui.qpic.cn",
+   "t": -520,
+   "n": 40,
+   "c": "corp"
+  },
+  {
+   "d": "apd-vlive.apdcdn.tc.qq.com",
+   "t": -560,
+   "n": 77,
+   "c": "corp"
+  },
+  {
+   "d": "www.taobao.com",
+   "t": -620,
+   "n": 4,
+   "c": "corp"
+  },
+  {
+   "d": "g.alicdn.com",
+   "t": -630,
+   "n": 58,
+   "c": "corp"
+  },
+  {
+   "d": "img.alicdn.com",
+   "t": -640,
+   "n": 121,
+   "c": "corp"
+  },
+  {
+   "d": "api.m.jd.com",
+   "t": -700,
+   "n": 19,
+   "c": "corp"
+  },
+  {
+   "d": "sns-webpic-qc.xhscdn.com",
+   "t": -760,
+   "n": 88,
+   "c": "corp"
+  },
+  {
+   "d": "edith.xiaohongshu.com",
+   "t": -770,
+   "n": 35,
+   "c": "corp"
+  },
+  {
+   "d": "www.zhihu.com",
+   "t": -900,
+   "n": 7,
+   "c": "corp"
+  },
+  {
+   "d": "pic1.zhimg.com",
+   "t": -910,
+   "n": 44,
+   "c": "corp"
+  },
+  {
+   "d": "music.163.com",
+   "t": -1000,
+   "n": 13,
+   "c": "corp"
+  },
+  {
+   "d": "m701.music.126.net",
+   "t": -1010,
+   "n": 29,
+   "c": "corp"
+  },
+  {
+   "d": "www.douyin.com",
+   "t": -1200,
+   "n": 3,
+   "c": "corp"
+  },
+  {
+   "d": "v26-web.douyinvod.com",
+   "t": -1210,
+   "n": 66,
+   "c": "corp"
+  },
+  {
+   "d": "api.steampowered.com",
+   "t": -1500,
+   "n": 10,
+   "c": "corp"
+  },
+  {
+   "d": "cdn.akamai.steamstatic.com",
+   "t": -1510,
+   "n": 52,
+   "c": "corp"
+  },
+  {
+   "d": "store.steampowered.com",
+   "t": -1520,
+   "n": 4,
+   "c": "corp"
+  },
+  {
+   "d": "accounts.nintendo.com",
+   "t": -1800,
+   "n": 6,
+   "c": "corp"
+  },
+  {
+   "d": "atum.hac.lp1.d4c.nintendo.net",
+   "t": -1810,
+   "n": 73,
+   "c": "corp"
+  },
+  {
+   "d": "www.netflix.com",
+   "t": -2400,
+   "n": 2,
+   "c": "corp"
+  },
+  {
+   "d": "api.openai.com",
+   "t": -2700,
+   "n": 15,
+   "c": "corp"
+  },
+  {
+   "d": "chatgpt.com",
+   "t": -2710,
+   "n": 24,
+   "c": "corp"
+  },
+  {
+   "d": "www.notion.so",
+   "t": -3000,
+   "n": 9,
+   "c": "corp"
+  },
+  {
+   "d": "slack.com",
+   "t": -3300,
+   "n": 12,
+   "c": "corp"
+  },
+  {
+   "d": "edgeapi.slack.com",
+   "t": -3310,
+   "n": 31,
+   "c": "corp"
+  },
+  {
+   "d": "feishu.cn",
+   "t": -3600,
+   "n": 20,
+   "c": "corp"
+  },
+  {
+   "d": "internal-api-lark-api.feishu.cn",
+   "t": -3610,
+   "n": 55,
+   "c": "corp"
+  },
+  {
+   "d": "update.cdn.mozilla.net",
+   "t": -4000,
+   "n": 2,
+   "c": "corp"
+  },
+  {
+   "d": "dl.google.com",
+   "t": -4500,
+   "n": 3,
+   "c": "corp"
+  },
+  {
+   "d": "swcdn.apple.com",
+   "t": -5400,
+   "n": 18,
+   "c": "corp"
+  },
+  {
+   "d": "time.apple.com",
+   "t": -6000,
+   "n": 40,
+   "c": "corp"
+  },
+  {
+   "d": "captive.apple.com",
+   "t": -6100,
+   "n": 22,
+   "c": "corp"
+  },
+  {
+   "d": "ocsp2.apple.com",
+   "t": -6200,
+   "n": 35,
+   "c": "corp"
+  },
+  {
+   "d": "cn-cdn.xindong.com",
+   "t": -7200,
+   "n": 11,
+   "c": "internal"
+  },
+  {
+   "d": "sso.xindong.com",
+   "t": -7300,
+   "n": 6,
+   "c": "internal"
+  },
+  {
+   "d": "a-very-long-subdomain-name-for-testing.cdn-edge.example-streaming-service.com",
+   "t": -7400,
+   "n": 1,
+   "c": "corp"
+  }
+ ]
+}

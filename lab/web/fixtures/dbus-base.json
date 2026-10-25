@@ -4,7 +4,8 @@
   "corpline_user": "demo.user",
   "corpline_devices_lines": [
     "F0:2F:4B:12:34:56\tMac Studio\t1",
-    "00:11:32:AB:CD:EF\tNAS\t0"
+    "00:11:32:AB:CD:EF\tNAS\t0",
+    "B8:27:EB:00:AA:BB\t客厅电视\t0"
   ],
   "corpline_overseas_domains": "apple.com,mzstatic.com",
   "corpline_cn_direct": "0",
@@ -12,5 +13,6 @@
   "corpline_sensitivity": "normal",
   "corpline_version": "0.1.0",
   "corpline_admin_ip": "192.168.50.198",
-  "corpline_has_password": "1"
+  "corpline_has_password": "1",
+  "corpline_direct_domains": "finder.video.qq.com"
 }

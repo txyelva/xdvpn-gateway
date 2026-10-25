@@ -204,18 +204,27 @@ fn run(conf: &Path) -> i32 {
 
     let isp = net::isp_dns(&cfg);
     let shared = dns::Shared::new(dns::View { isp: isp.clone(), overseas: cfg.overseas_dns.clone(), ..Default::default() });
+    // 上次启动时名单缺失、这次有了：在"最近发生了什么"里补一条，让人知道它已经生效
+    let cn_missing = cfg.run_dir.join("cn_missing");
     let cn = if cfg.cn_direct {
+        let miss = |tl: &mut Timeline, text: &str| {
+            tl.push(Level::Warn, text);
+            let _ = std::fs::write(&cn_missing, b"");
+        };
         match dns::domains::SuffixSet::load_file(&cfg.cn_list) {
             Ok(s) if s.len() > 1000 => {
                 report::log(&format!("中国服务名单 {} 条（{} KB）", s.len(), s.bytes() / 1024));
+                if std::fs::remove_file(&cn_missing).is_ok() {
+                    tl.push(Level::Ok, &format!("中国服务名单已就绪（{} 个网站），国内网站直连已生效", s.len()));
+                }
                 Some(s)
             }
             Ok(s) => {
-                tl.push(Level::Warn, &format!("中国服务名单只有 {} 条，像是不完整，国内网站直连暂不生效", s.len()));
+                miss(&mut tl, &format!("中国服务名单只有 {} 条，像是不完整，国内网站直连暂不生效", s.len()));
                 None
             }
             Err(_) => {
-                tl.push(Level::Warn, "没有找到中国服务名单，国内网站直连暂不生效");
+                miss(&mut tl, "没有找到中国服务名单，国内网站直连暂不生效（下载进度见设置里的「国内网站直连」）");
                 None
             }
         }
@@ -224,6 +233,8 @@ fn run(conf: &Path) -> i32 {
     };
     let st = dns::Static {
         overseas: dns::domains::SuffixSet::new(cfg.overseas_domains.clone()),
+        direct: dns::domains::SuffixSet::new(cfg.direct_domains.clone()),
+        recent_file: Some(cfg.status_dir.join("corpline_domains.json")),
         cn,
         filter_aaaa: cfg.filter_aaaa,
         cn_ipset: net::SET_CN.to_string(),
@@ -772,6 +783,7 @@ impl Daemon {
         net::cleanup(&self.cfg);
         let _ = std::fs::remove_file(self.cfg.tunnel_file());
         let _ = std::fs::remove_file(self.cfg.run_dir.join("openconnect.pid"));
+        let _ = std::fs::remove_file(self.cfg.status_dir.join("corpline_domains.json"));
         let s = Json::obj().n("v", 1).s("version", VERSION).s("state", "off").n("updated", sys::wall_secs()).raw("events", report::events_json(&self.tl.items, 30)).done();
         let _ = sys::write_atomic(&self.cfg.status_dir.join("corpline_status.json"), s.as_bytes());
     }

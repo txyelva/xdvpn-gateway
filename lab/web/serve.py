@@ -9,6 +9,7 @@
     open=r-account,r-devices,r-global,r-notify,r-adv                     预先展开设置行
     log=1                                                                预先展开运行日志
     noclients=1                                                          模拟读不到在线设备列表
+    /_temp/corpline_domains.json                                         最近访问的网站（fixtures/domains.json；插件没运行时 404）
     net=login|down                                                       模拟登录过期（状态和 dbus 回登录页）/ 路由器连不上（503）
     /_lab/net?m=ok|login|down                                            页面开着时切换上面的模拟
     /_lab/slow?post=秒&status=秒                                          让 POST /_api/ 或状态文件晚回复（测请求进行中的界面）
@@ -112,6 +113,25 @@ def current_status():
     return out
 
 
+def current_domains():
+    """最近访问的网站：插件没在运行（没有状态或状态是 off）时没有这个文件；c 按当前已保存的规则重新算。"""
+    s = current_status()
+    if not s or s.get("state") == "off":
+        return None
+    with open(os.path.join(FIX, "domains.json"), encoding="utf-8") as f:
+        fx = json.load(f)
+    db = STATE["dbus"]
+    rules = [(d, "direct") for d in re.split(r"[,\s]+", db.get("corpline_direct_domains", "")) if d] + \
+            [(d, "overseas") for d in re.split(r"[,\s]+", db.get("corpline_overseas_domains", "")) if d]
+    for it in fx["items"]:
+        hit = [r for r in rules if it["d"] == r[0] or it["d"].endswith("." + r[0])]
+        if hit:
+            it["c"] = max(hit, key=lambda r: len(r[0]))[1]
+        elif it["c"] != "internal":
+            it["c"] = "corp"
+    return absolutize(fx, int(time.time()))
+
+
 def merge(a, b):
     out = dict(a)
     for k, v in b.items():
@@ -135,6 +155,32 @@ def save_admin_device():
         return
     lines = ["%s\t管理这台路由器的电脑\t1" % mac] + [l for l in cur.split("\n") if l]
     db["corpline_devices"] = encode_devices(lines)
+
+
+# 中国服务名单状态（corpline_cn_*）：?cn=bundle|download|downloading|failed|nolist|none，配合 cn_direct=1
+def set_cn(kind):
+    db, now = STATE["dbus"], int(time.time())
+    for k in [k for k in db if k.startswith("corpline_cn_") and k != "corpline_cn_direct"]:
+        db.pop(k)
+    db["corpline_cn_direct"] = "1"
+    base = {"corpline_cn_count": "109513", "corpline_cn_time": str(now - 86400 * 3), "corpline_cn_src": "bundle", "corpline_cn_state": "ok"}
+    if kind == "bundle":
+        db.update(base)
+    elif kind == "download":
+        db.update(base, corpline_cn_src="download", corpline_cn_time=str(now - 3600 * 5))
+    elif kind == "downloading":
+        db.update(base, corpline_cn_state="downloading", corpline_cn_tried=str(now))
+    elif kind == "failed":
+        db.update(base, corpline_cn_state="failed", corpline_cn_tried=str(now - 600), corpline_cn_error="下载超时")
+    elif kind == "nolist":
+        db.update(corpline_cn_state="failed", corpline_cn_tried=str(now - 120), corpline_cn_error="连不上下载服务器")
+
+
+def cn_tick():
+    db = STATE["dbus"]
+    if db.get("corpline_cn_state") == "downloading" and time.time() >= STATE.get("cn_done_at", 0):
+        db.update(corpline_cn_state="ok", corpline_cn_count="109795", corpline_cn_time=str(int(time.time())), corpline_cn_src="download")
+        db.pop("corpline_cn_error", None)
 
 
 def simulate(action):
@@ -204,6 +250,9 @@ class H(BaseHTTPRequestHandler):
         if p == "/Module_corpline.asp":
             if "s" in q:
                 reset(q["s"][0])
+            if "cn" in q:
+                set_cn(q["cn"][0])
+                STATE["cn_done_at"] = time.time() + 3600
             STATE["noclients"] = q.get("noclients", ["0"])[0] == "1"
             STATE["net"] = q.get("net", ["ok"])[0]
             with open(ASP, encoding="utf-8") as f:
@@ -214,6 +263,9 @@ class H(BaseHTTPRequestHandler):
             for rid in (q.get("open", [""])[0]).split(","):
                 if rid:
                     hooks.append("CL.openRow(%s,true,true);" % json.dumps(rid))
+            if "click" in q:
+                # 交互验证：页面加载后点一下指定按钮
+                hooks.append("window.addEventListener('load',function(){setTimeout(function(){document.getElementById(%s).click();},400);});" % json.dumps(q["click"][0]))
             if q.get("log", ["0"])[0] == "1":
                 hooks.append("window.addEventListener('load',function(){setTimeout(function(){document.getElementById('clLogBtn').click();},50);});")
             if hooks:
@@ -230,6 +282,7 @@ class H(BaseHTTPRequestHandler):
             STATE["slow_status"] = float(q.get("status", ["0"])[0])
             return self.json({"post": STATE["slow_post"], "status": STATE["slow_status"]})
         if p == "/_api/corpline_":
+            cn_tick()
             return self.json({"result": [STATE["dbus"]]})
         if p == "/_temp/corpline_status.json":
             if STATE["slow_status"]:
@@ -238,6 +291,11 @@ class H(BaseHTTPRequestHandler):
             if s is not None and STATE["patch"]:
                 s = merge(s, STATE["patch"])
             return self.json(s) if s is not None else self.send(404, "not found")
+        if p == "/_temp/corpline_domains.json":
+            if self.net_down():
+                return
+            d = current_domains()
+            return self.json(d) if d is not None else self.send(404, "not found")
         if p == "/_temp/corpline_log.txt":
             return self.file(os.path.join(FIX, "corpline_log.txt"), "text/plain; charset=utf-8")
         if p == "/appGet.cgi":
@@ -299,6 +357,10 @@ class H(BaseHTTPRequestHandler):
             if db.get("corpline_notify", "off") == "off" or not db.get("corpline_notify_url"):
                 return self.json({"result": "nourl"})
             return self.json({"result": "fail" if "fail" in db["corpline_notify_url"] else req.get("id")})
+        if action == 6:
+            db.update(corpline_cn_state="downloading", corpline_cn_tried=str(int(time.time())))
+            STATE["cn_done_at"] = time.time() + 6
+            return self.json({"result": req.get("id")})
         if action in (1, 4):
             save_admin_device()
         if action in (0, 1, 2, 3):

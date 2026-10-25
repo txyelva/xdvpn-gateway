@@ -24,15 +24,19 @@ pub enum Class {
     Internal,
     /// 用海外解析的例外（默认 Apple）
     Overseas,
-    /// 中国服务名单（仅"国内网站直连"开启时）
+    /// 走直连：中国服务名单（"国内网站直连"开启时）与用户单独设为直连的网站
     Cn,
     /// 其余全部
     Default,
 }
 
-pub fn classify(name: &str, internal: &SuffixSet, overseas: &SuffixSet, cn: Option<&SuffixSet>) -> Class {
+pub fn classify(name: &str, internal: &SuffixSet, direct: &SuffixSet, overseas: &SuffixSet, cn: Option<&SuffixSet>) -> Class {
     if internal.matches(name) {
         return Class::Internal;
+    }
+    // 用户单独设置的优先于内置名单（Apple 默认走海外解析，用户也可以把它改成直连）
+    if direct.matches(name) {
+        return Class::Cn;
     }
     if overseas.matches(name) {
         return Class::Overseas;
@@ -115,11 +119,15 @@ mod tests {
     #[test]
     fn classes() {
         let (i, o, c) = sets();
-        assert_eq!(classify("git.xindong.com", &i, &o, Some(&c)), Class::Internal);
-        assert_eq!(classify("apps.apple.com", &i, &o, Some(&c)), Class::Overseas);
-        assert_eq!(classify("www.baidu.com", &i, &o, Some(&c)), Class::Cn);
-        assert_eq!(classify("www.baidu.com", &i, &o, None), Class::Default, "国内直连关闭时名单不生效");
-        assert_eq!(classify("www.google.com", &i, &o, Some(&c)), Class::Default);
+        assert_eq!(classify("git.xindong.com", &i, &SuffixSet::empty(), &o, Some(&c)), Class::Internal);
+        assert_eq!(classify("apps.apple.com", &i, &SuffixSet::empty(), &o, Some(&c)), Class::Overseas);
+        assert_eq!(classify("www.baidu.com", &i, &SuffixSet::empty(), &o, Some(&c)), Class::Cn);
+        // 用户单独设为直连的优先于海外解析名单
+        let d = SuffixSet::new(vec!["apps.apple.com".to_string()]);
+        assert_eq!(classify("apps.apple.com", &i, &d, &o, Some(&c)), Class::Cn);
+        assert_eq!(classify("www.apple.com", &i, &d, &o, Some(&c)), Class::Overseas);
+        assert_eq!(classify("www.baidu.com", &i, &SuffixSet::empty(), &o, None), Class::Default, "国内直连关闭时名单不生效");
+        assert_eq!(classify("www.google.com", &i, &SuffixSet::empty(), &o, Some(&c)), Class::Default);
     }
 
     #[test]

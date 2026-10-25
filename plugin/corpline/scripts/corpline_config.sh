@@ -195,6 +195,8 @@ gen_conf() {
 			kv direct_macs "$(direct_macs)"
 			# 安装时已写入默认 apple.com,mzstatic.com；用户清空后这里就是空，不再回到默认
 			kv overseas_domains "$corpline_overseas_domains"
+			# 网页「网站单独设置」里设为直连的网站
+			kv direct_domains "$corpline_direct_domains"
 			[ -n "$corpline_overseas_dns" ] && kv overseas_dns "$corpline_overseas_dns"
 			[ -n "$corpline_isp_dns" ] && kv isp_dns "$corpline_isp_dns"
 			[ -n "$corpline_internal_domains" ] && kv internal_domains "$corpline_internal_domains"
@@ -250,7 +252,7 @@ start_daemon() {
 	# 退出码 3 = 已有一份在运行（DNS 端口被占），不能去清别人的规则。
 	local gen="$$.$(uptime_s)"
 	echo $gen >$RUN/gen
-	local w="$BIN run -c $CONF; rc=\$?; [ \$rc != 3 ] && [ \"\$(cat $RUN/gen 2>/dev/null)\" = $gen ] && { rm -f /tmp/upload/corpline_status.json; $BIN cleanup -c $CONF; /bin/sh $KSROOT/scripts/corpline_config.sh ensure; }"
+	local w="$BIN run -c $CONF; rc=\$?; [ \$rc != 3 ] && [ \"\$(cat $RUN/gen 2>/dev/null)\" = $gen ] && { rm -f /tmp/upload/corpline_status.json /tmp/upload/corpline_domains.json; $BIN cleanup -c $CONF; /bin/sh $KSROOT/scripts/corpline_config.sh ensure; }"
 	if command -v setsid >/dev/null 2>&1; then
 		(setsid /bin/sh -c "$w" >/dev/null 2>&1 </dev/null &)
 	else
@@ -292,7 +294,7 @@ stop_daemon() {
 	# 无论守护程序是否正常退出，都再清一遍（幂等），保证不留规则
 	[ -f $CONF ] || gen_conf
 	$BIN cleanup -c $CONF >/dev/null 2>&1
-	rm -f $PIDF
+	rm -f $PIDF /tmp/upload/corpline_domains.json
 }
 
 hooks_on() {
@@ -356,7 +358,7 @@ do_start() {
 	fi
 	hooks_on
 	if [ "$corpline_cn_direct" = "1" ] && [ ! -s $CFGDIR/china-domains.conf ]; then
-		# 首次开启：后台下载名单，下载好后重启守护程序让它生效（期间照常走公司线路）
+		# 名单缺失（正常情况安装包自带）：后台下载，下载好后重启守护程序让它生效（期间照常走公司线路）
 		(
 			sleep 5
 			/bin/sh $KSROOT/scripts/corpline_config.sh update_cn
@@ -379,6 +381,11 @@ do_ensure() {
 		return
 	fi
 	local now=$(uptime_s)
+	# 名单缺失（安装包里那份被删了、或首次下载失败）：每小时在后台重试一次，下载好会自动重启生效
+	if [ "$corpline_cn_direct" = "1" ] && [ ! -s $CFGDIR/china-domains.conf ] &&
+		[ $(($(date +%s) - ${corpline_cn_tried:-0})) -ge 3600 ]; then
+		/bin/sh $KSROOT/scripts/corpline_config.sh update_cn >/dev/null 2>&1 &
+	fi
 	if [ -n "$(daemon_pid)" ]; then
 		# 稳定运行 10 分钟后清零开机计数（防"开机即坏"循环用）
 		if [ ! -f $RUN/stable ] && [ $((now - $(cat $RUN/started 2>/dev/null || echo $now))) -ge 600 ]; then
@@ -425,24 +432,69 @@ do_wan_up() {
 	do_start
 }
 
-# 中国服务名单（felixonmars/dnsmasq-china-list accelerated-domains）：首次开启"国内网站直连"时下载，之后每周更新。
-# 条目数校验通过才原子替换；失败保留旧表。
-CN_URLS="https://cdn.jsdelivr.net/gh/felixonmars/dnsmasq-china-list@master/accelerated-domains.china.conf https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf"
+# 中国服务名单（felixonmars/dnsmasq-china-list accelerated-domains）：安装包里自带一份，之后每周更新。
+# 只存域名（比原格式省一半空间）；条目数校验通过才原子替换，失败保留旧名单。
+# 进度和结果写进 dbus（corpline_cn_*），网页上「国内网站直连」下面显示：
+#   state = downloading / ok / failed；count 条数；time 名单日期；src bundle|download；tried 上次尝试；error 失败原因
+CN_PATH=felixonmars/dnsmasq-china-list@master/accelerated-domains.china.conf
+CN_URLS="https://cdn.jsdelivr.net/gh/$CN_PATH https://fastly.jsdelivr.net/gh/$CN_PATH https://testingcf.jsdelivr.net/gh/$CN_PATH https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf"
+cn_reason() {
+	case $1 in
+	6) echo "域名解析失败" ;;
+	7) echo "连不上下载服务器" ;;
+	28) echo "下载超时" ;;
+	22) echo "服务器返回错误" ;;
+	35 | 51 | 60) echo "加密连接失败" ;;
+	23) echo "存储空间不足" ;;
+	short) echo "下载的内容不完整" ;;
+	*) echo "下载出错（代码 $1）" ;;
+	esac
+}
+# 同一时间只跑一个下载（网页「立即更新」、每周定时、名单缺失时的自动重试可能撞上）
+cn_busy() {
+	local p=$(cat $RUN/cn.pid 2>/dev/null)
+	[ -n "$p" ] && [ "$p" != "$$" ] && grep -q corpline_config /proc/$p/cmdline 2>/dev/null
+}
+cn_lock() {
+	cn_busy && return 1
+	mkdir -p $RUN
+	echo $$ >$RUN/cn.pid
+}
 update_cn() {
-	local dst=$CFGDIR/china-domains.conf tmp=$CFGDIR/china-domains.tmp
+	local dst=$CFGDIR/china-domains.conf tmp=$CFGDIR/china-domains.tmp n rc why u
+	cn_lock || return 2
 	mkdir -p $CFGDIR
+	dbus set corpline_cn_state=downloading
+	dbus set corpline_cn_tried=$(date +%s)
 	for u in $CN_URLS; do
-		rm -f $tmp
-		curl -fsSL -m 120 -o $tmp "$u" 2>/dev/null || wget -q -T 120 -O $tmp "$u" 2>/dev/null || continue
-		local n=$(grep -c '^server=/' $tmp 2>/dev/null)
-		if [ "${n:-0}" -ge 50000 ]; then
-			mv -f $tmp $dst
-			say "中国服务名单已更新：$n 条"
-			return 0
+		rm -f $tmp $tmp.raw
+		curl -fsS --connect-timeout 15 -m 120 -o $tmp.raw "$u" 2>/dev/null
+		rc=$?
+		[ $rc -ne 0 ] && { why=$rc; continue; }
+		sed -n 's#^server=/\([^/]*\)/.*#\1#p' $tmp.raw >$tmp
+		rm -f $tmp.raw
+		n=$(wc -l <$tmp)
+		[ "${n:-0}" -ge 50000 ] || { why=short; continue; }
+		dbus set corpline_cn_count=$n
+		dbus set corpline_cn_time=$(date +%s)
+		dbus set corpline_cn_src=download
+		dbus remove corpline_cn_error
+		dbus set corpline_cn_state=ok
+		rm -f $RUN/cn.pid
+		if cmp -s $tmp $dst; then
+			rm -f $tmp
+			say "中国服务名单已是最新：$n 个网站"
+			return 1
 		fi
+		mv -f $tmp $dst
+		say "中国服务名单已更新：$n 个网站"
+		return 0
 	done
-	rm -f $tmp
-	say "中国服务名单更新失败，继续用旧名单"
+	rm -f $tmp $tmp.raw $RUN/cn.pid
+	why=$(cn_reason ${why:-7})
+	dbus set corpline_cn_error="$why"
+	dbus set corpline_cn_state=failed
+	say "中国服务名单更新失败（4 个下载地址都没成功，最后一个：$why），继续用旧名单"
 	return 1
 }
 
@@ -595,6 +647,14 @@ case $2 in
 	say "重新启用"
 	do_start
 	unlock
+	;;
+6)
+	# 网页「立即更新」中国服务名单：后台下载，进度写在 dbus 里，网页轮询显示
+	cn_busy && { http_response "$1"; exit 0; }
+	dbus set corpline_cn_state=downloading
+	dbus set corpline_cn_tried=$(date +%s)
+	http_response "$1"
+	/bin/sh $KSROOT/scripts/corpline_config.sh update_cn >/dev/null 2>&1 &
 	;;
 0)
 	# 关闭：必须能生效，等不到锁也照样执行

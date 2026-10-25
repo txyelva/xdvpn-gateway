@@ -27,6 +27,8 @@ pub struct Config {
     pub direct_macs: Vec<String>,
 
     pub overseas_domains: Vec<String>,
+    /// 用户单独设为直连的网站（解析走运营商 DNS，连接不进隧道）
+    pub direct_domains: Vec<String>,
     pub overseas_dns: Vec<Ipv4Addr>,
     pub company_dns_override: Vec<Ipv4Addr>,
     pub internal_domains: Vec<String>,
@@ -147,6 +149,7 @@ impl Config {
             direct_macs: list(g("direct_macs")).iter().map(|x| x.to_ascii_uppercase()).collect(),
 
             overseas_domains,
+            direct_domains: list(g("direct_domains")).iter().map(|d| norm_domain(d)).collect(),
             overseas_dns,
             company_dns_override: ips(g("company_dns")),
             internal_domains: list(g("internal_domains")).iter().map(|d| norm_domain(d)).collect(),

@@ -4,3 +4,5 @@ target/
 plugin/corpline/bin/corpline
 lab/web/shots/
 lab/report/
+plugin/corpline/configs/
+__pycache__/

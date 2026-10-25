@@ -18,6 +18,8 @@ EXTRA = {
     "active-log": "s=active&log=1",
     "setup-open": "s=setup&open=r-account,r-devices",
     "active-noclients": "s=active&noclients=1&open=r-devices",
+    "devices-open": "s=active&open=r-devices",
+    "domains-open": "s=active&open=r-global",
 }
 # 需要页面多跑一会儿才出现的状态：(参数, 虚拟时间毫秒)
 SLOW = {"noreach": ("s=active&net=down", 16000)}
@@ -45,7 +47,7 @@ os.makedirs(os.path.join(OUT, "proto"), exist_ok=True)
 for s in STATES:
     shot(BASE + "?s=" + s, os.path.join(OUT, s + ".png"))
 for k, q in EXTRA.items():
-    shot(BASE + "?" + q, os.path.join(OUT, k + ".png"), 2600)
+    shot(BASE + "?" + q, os.path.join(OUT, k + ".png"), 5600)
 for k, (q, ms) in SLOW.items():
     shot(BASE + "?" + q, os.path.join(OUT, k + ".png"), 1700, ms)
 if "--proto" in sys.argv:

@@ -56,9 +56,9 @@
 .cl .cl-tg[aria-checked="true"]::after{transform:translateX(16px)}
 .cl .cl-tg:disabled{opacity:.45;cursor:not-allowed}
 .cl .cl-tg.busy{cursor:progress}
-.cl .cl-tg:focus,.cl .cl-btn:focus,.cl .cl-row-h:focus,.cl .cl-lnk:focus,.cl .cl-seg button:focus{outline:2px solid var(--blue);outline-offset:2px}
+.cl .cl-tg:focus,.cl .cl-btn:focus,.cl .cl-row-h:focus,.cl .cl-lnk:focus,.cl .cl-dname:focus,.cl .cl-seg button:focus{outline:2px solid var(--blue);outline-offset:2px}
 /* 鼠标点击不显示焦点框；不认识 :focus-visible 的旧浏览器（Safari 15.4 以前）会整条忽略这一规则，保留上面的焦点框 */
-.cl .cl-tg:focus:not(:focus-visible),.cl .cl-btn:focus:not(:focus-visible),.cl .cl-row-h:focus:not(:focus-visible),.cl .cl-lnk:focus:not(:focus-visible),.cl .cl-seg button:focus:not(:focus-visible){outline:none}
+.cl .cl-tg:focus:not(:focus-visible),.cl .cl-btn:focus:not(:focus-visible),.cl .cl-row-h:focus:not(:focus-visible),.cl .cl-lnk:focus:not(:focus-visible),.cl .cl-dname:focus:not(:focus-visible),.cl .cl-seg button:focus:not(:focus-visible){outline:none}
 
 /* 状态卡 */
 .cl .cl-card{background:var(--surface);border:1px solid var(--line);border-radius:8px}
@@ -131,6 +131,11 @@
 .cl .cl-row-h .val{font-size:13px;line-height:20px;color:var(--t2);white-space:nowrap;max-width:300px;overflow:hidden;text-overflow:ellipsis}
 .cl .cl-chev{width:16px;height:16px;flex:none;color:var(--t3)}
 .cl .cl-row.static .cl-row-h{cursor:default}
+/* 国内网站直连下面的名单状态 */
+.cl .cl-cnst{display:flex;align-items:baseline;gap:12px;margin-top:-2px;padding:0 20px 14px;font-size:12px;line-height:18px;color:var(--t3)}
+.cl .cl-cnst[hidden]{display:none}
+.cl .cl-cnst .tx{flex:1;min-width:0;overflow-wrap:anywhere}
+.cl .cl-cnst.warn .tx{color:var(--warn)} .cl .cl-cnst.err .tx{color:var(--err)}
 .cl .cl-row-h:disabled{cursor:default}
 .cl .cl-row-h:disabled:hover{background:none}
 .cl .cl-row-h:disabled .cl-chev{opacity:.35}
@@ -148,6 +153,7 @@
 .cl .cl-in:focus{outline:none;border-color:var(--blue)}
 .cl .cl-in.bad{border-color:var(--err)}
 .cl select.cl-in{padding:0 6px}
+.cl input[type=search].cl-in{-webkit-appearance:none;appearance:none}
 .cl .cl-hint{font-size:12px;line-height:18px;color:var(--t3);margin-top:12px;word-break:keep-all;overflow-wrap:anywhere}
 .cl .cl-acts{display:flex;align-items:center;gap:8px;margin-top:16px}
 .cl .cl-msg{font-size:12px;line-height:18px;color:var(--t3);margin-left:4px}
@@ -166,14 +172,27 @@
 .cl .cl-dev span{display:block;font-size:12px;line-height:18px;color:var(--t3)}
 .cl .cl-dev .tag{font-size:12px;line-height:18px;color:var(--t3);text-align:right}
 .cl .cl-dev.empty{display:block;color:var(--t3);font-size:13px;line-height:20px}
+.cl .cl-dev > div:first-child{min-width:0}
+.cl .cl-dev.off b{color:var(--t2)}
+.cl .cl-dev .cl-seg{flex:none}
+.cl .cl-dev-r{display:flex;align-items:center;gap:16px;flex:none}
+.cl .cl-dname{display:block;max-width:100%;background:none;border:0;padding:6px 0;margin:-6px 0;color:var(--t1);font-size:13px;line-height:20px;font-weight:500;text-align:left;cursor:pointer;overflow-wrap:anywhere;word-break:break-all;border-radius:4px}
+.cl .cl-dname:hover{text-decoration:underline;text-underline-offset:3px}
+.cl .cl-tag{display:inline-block;vertical-align:top;margin:1px 0 0 8px;padding:0 6px;border:1px solid var(--line);border-radius:4px;font-style:normal;font-size:12px;line-height:14px;color:var(--t2)}
+.cl .cl-subh{font-size:13px;line-height:20px;font-weight:500;color:var(--t2);margin-top:24px;padding-bottom:4px}
+.cl .cl-xp-in > .cl-subh:first-child{margin-top:4px}
+.cl .cl-more{display:inline-block;margin-top:12px}
 .cl .cl-add{display:flex;gap:8px;margin-top:12px;max-width:520px}
 .cl .cl-add .cl-in{flex:1;min-width:0}
+.cl .cl-add .cl-seg{flex:none}
 
 .cl .cl-seg{display:inline-flex;border:1px solid var(--input-line);border-radius:6px;overflow:hidden}
 .cl .cl-seg button{height:30px;padding:0 14px;background:transparent;border:0;color:var(--t2);font-size:13px;line-height:20px;cursor:pointer;transition:background var(--d-fast) var(--ease),color var(--d-fast) var(--ease)}
 .cl .cl-seg button:hover{color:var(--t1)}
 .cl .cl-seg button + button{border-left:1px solid var(--input-line)}
 .cl .cl-seg button[aria-checked="true"]{background:var(--blue);color:#fff}
+/* 列表里每行的线路选择：选中态用中性底，一列看下来不刺眼 */
+.cl .cl-seg.q button[aria-checked="true"]{background:#66757A;color:#fff}
 
 /* 页脚 */
 .cl .cl-foot{display:flex;justify-content:space-between;align-items:center;margin-top:24px;font-size:12px;line-height:18px;color:var(--t3)}
@@ -190,7 +209,6 @@ var CL = (function () {
 
 	var DEFAULT_SERVER = 'vpn.xindong.com:8443';
 	var LOCK_NAME = '管理这台路由器的电脑';   // 后端自动加锁定设备时用的名字
-	var DEFAULT_DOMAINS = 'apple.com,mzstatic.com';
 	var DOMAIN_NOTE = { 'apple.com': '苹果官网、商店链接', 'mzstatic.com': 'App Store 图片和页面资源' };
 	var ISP = [['', '运营商 DNS（自动）'], ['223.5.5.5,223.6.6.6', '阿里 223.5.5.5'], ['119.29.29.29,119.28.28.28', '腾讯 119.29.29.29'], ['custom', '自定义…']];
 	var POLL_MS = 5000, STALE_S = 30, TL_MAX = 6;
@@ -291,7 +309,7 @@ var CL = (function () {
 		if (ok) { net.okAt = Date.now(); net.fails = 0; } else net.fails++;
 	}
 	function unreachable() { return net.fails >= 2 && Date.now() - net.okAt > 10000; }
-	// action：1 应用（会重连）  4 只保存（不重连）  5 发测试通知  2 立即重试  3 重新启用  0 关闭
+	// action：1 应用（会重连）  4 只保存（不重连）  5 发测试通知  2 立即重试  3 重新启用  0 关闭  6 更新中国服务名单
 	// 只提交这次改动的字段：软件中心只写收到的键，没提交的设置保持路由器上的值
 	function submit(action, over, cb) {
 		var id = Math.floor(Math.random() * 100000000), f = '', k;
@@ -316,7 +334,7 @@ var CL = (function () {
 	function curStarted() { return st && st.state !== 'off' && st.started ? st.started : 0; }
 	function startPending(was) { return { kind: 'start', at: Date.now(), started: was }; }
 	function renderBusy() {
-		var on = inflight > 0, ids = ['clSave-account', 'clSave-devices', 'clSave-domains', 'clSave-notify', 'clSave-adv', 'clCn', 'clNtTest'], i, el;
+		var on = inflight > 0, ids = ['clSave-account', 'clSave-devices', 'clSave-domains', 'clSave-notify', 'clSave-adv', 'clCn', 'clNtTest', 'clCnUpd'], i, el;
 		for (i = 0; i < ids.length; i++) { el = $i(ids[i]); if (el) el.disabled = on || (ids[i] === 'clCn' && !dbLoaded); }
 		el = $i('clActBtn');
 		if (el) el.disabled = on || el.getAttribute('data-busy') === '1';
@@ -564,104 +582,227 @@ var CL = (function () {
 			'保存后会重新连接公司线路，连上并确认正常之前，家里保持直连。' : '保存后打开右上角开关即可开始使用。');
 		$i('clSave-account').textContent = db.corpline_enable === '1' ? '保存并重新连接' : '保存';
 	}
+	/* 家里的设备：在线设备 + 直连名单里不在线的设备，每台选走哪条线 */
 	function devList() { return edit.devices || parseDevices(db.corpline_devices); }
+	function devName(d, c) { return (d && d.name && d.name !== LOCK_NAME && d.name) || (c && c.name) || ''; }
+	// 按名字排：英文名在前（不分大小写），中文名其次，没有名字的最后
+	function byName(a, b) {
+		function grp(n) { return !n ? 2 : /^[\x00-\x7f]/.test(n) ? 0 : 1; }
+		var ga = grp(a.name), gb = grp(b.name), x, y;
+		if (ga !== gb) return ga - gb;
+		x = ga === 2 ? a.mac : a.name.toLowerCase(); y = gb === 2 ? b.mac : b.name.toLowerCase();
+		try { return x.localeCompare(y, 'zh-Hans-CN'); } catch (e) { return x < y ? -1 : x > y ? 1 : 0; }
+	}
+	function devRows() {
+		var list = devList(), saved = parseDevices(db.corpline_devices), direct = {}, seen = {}, pinned = [], online = [], offline = [], i, k, d, c;
+		for (i = 0; i < list.length; i++) direct[list[i].mac] = list[i];
+		// 管理电脑：已锁定的那行；还没开启过就用登录后台的这台电脑占位，开启时自动加入
+		for (i = 0; i < list.length; i++) if (list[i].locked) {
+			c = clients && clients[list[i].mac];
+			pinned.push({ mac: list[i].mac, name: devName(list[i], c) || '这台电脑', ip: c && c.ip || '', online: !c || c.online, locked: true });
+			seen[list[i].mac] = 1;
+		}
+		if (!pinned.length && ADMIN_IP) {
+			var me = clientByIp(ADMIN_IP);
+			pinned.push({ mac: me ? me.mac : '', name: me && me.name || '这台电脑', ip: ADMIN_IP, online: true, locked: true, later: true });
+			if (me) seen[me.mac] = 1;
+		}
+		if (clients) for (k in clients) if (clients.hasOwnProperty(k) && clients[k].online && !seen[k]) {
+			online.push({ mac: k, name: devName(direct[k], clients[k]), ip: clients[k].ip, online: true, direct: !!direct[k] });
+			seen[k] = 1;
+		}
+		// 不在线但在直连名单里的设备（含刚切回公司线路、还没保存的），规则不能丢
+		var cand = list.concat(saved);
+		for (i = 0; i < cand.length; i++) {
+			d = cand[i]; if (seen[d.mac] || d.locked) continue;
+			c = clients && clients[d.mac];
+			offline.push({ mac: d.mac, name: devName(direct[d.mac] || d, c), ip: c && c.ip || '', online: false, unknown: !clients, direct: !!direct[d.mac] });
+			seen[d.mac] = 1;
+		}
+		online.sort(byName); offline.sort(byName);
+		return { rows: pinned.concat(online, offline), online: online.length + (pinned.length && pinned[0].online && clients && pinned[0].ip ? 1 : 0), direct: list.length + (pinned.length && pinned[0].later ? 1 : 0) };
+	}
+	function seg(label, cur, opts, attr) {
+		var h = '<div class="cl-seg q" role="radiogroup" aria-label="' + esc(label) + '">', i;
+		for (i = 0; i < opts.length; i++)
+			h += '<button type="button" role="radio" aria-checked="' + (opts[i][0] === cur) + '" data-v="' + opts[i][0] + '"' + attr + '>' + opts[i][1] + '</button>';
+		return h + '</div>';
+	}
 	function renderDevices() {
 		if (!dbLoaded) { renderLock(false); return; }
-		var list = devList(), h = '', i, d, c, locked = null, count = 0;
-		for (i = 0; i < list.length; i++) if (list[i].locked) locked = list[i];
-		// 还没开启过：用登录这台后台的电脑占位，开启时自动加入
-		if (!locked && ADMIN_IP) {
-			var me = clientByIp(ADMIN_IP);
-			h += devRow(me && me.name || '这台电脑', ADMIN_IP + ' · 管理这台路由器的电脑', '<span class="tag">开启时自动加入，保证随时能打开路由器后台</span>');
-			count++;
+		var r = devRows(), h = '', i, d, sub, right;
+		for (i = 0; i < r.rows.length; i++) {
+			d = r.rows[i];
+			sub = [d.ip, d.mac].filter(function (x) { return !!x; }).join(' · ');
+			if (!d.online && !d.unknown) sub += ' · 不在线';
+			if (d.locked) {
+				right = '<span class="tag">固定直连</span>';
+				h += '<div class="cl-dev"><div><b>' + esc(d.name) + '</b><span class="cl-num">' + esc(sub) + '</span><span>' +
+					(d.later ? '管理这台路由器的电脑，开启时自动加入直连，保证随时能打开后台' : '管理这台路由器的电脑，保证随时能打开后台') + '</span></div>' + right + '</div>';
+			} else {
+				right = seg((d.name || d.mac) + ' 走哪条线', d.direct ? 'direct' : 'corp', [['corp', '公司线路'], ['direct', '直连']], ' data-mac="' + d.mac + '"');
+				h += '<div class="cl-dev' + (d.online ? '' : ' off') + '"><div><b>' + esc(d.name || '未命名设备') + '</b><span class="cl-num">' + esc(sub) + '</span></div>' + right + '</div>';
+			}
 		}
-		for (i = 0; i < list.length; i++) {
-			d = list[i]; c = clients && clients[d.mac];
-			var where = c && c.ip ? c.ip : d.mac;
-			if (d.locked) h = devRow((d.name !== LOCK_NAME && d.name) || (c && c.name) || '这台电脑', where + ' · 管理这台路由器的电脑', '<span class="tag">固定直连，保证随时能打开路由器后台</span>') + h;
-			else h += devRow(d.name || (c && c.name) || d.mac, where + (c && !c.online ? ' · 不在线' : ''), '<button type="button" class="cl-lnk" data-rm="' + d.mac + '">移除</button>');
-			count++;
-		}
-		if (!h) h = '<div class="cl-dev empty">还没有设备。家里的设备默认都走公司线路。</div>';
+		if (!h) h = '<div class="cl-dev empty">读不到在线设备。家里的设备默认都走公司线路。</div>';
 		$i('clDevList').innerHTML = h;
-		setVal('clDevVal', count + ' 台');
-		var btns = $i('clDevList').getElementsByTagName('button');
-		for (i = 0; i < btns.length; i++) btns[i].onclick = removeDevice;
-		// 选择在线设备
-		var sel = $i('clDevSel'), opts = '<option value="">选择在线设备…</option>', have = {}, k, n = 0;
-		for (i = 0; i < list.length; i++) have[list[i].mac] = 1;
-		if (clients) {
-			var arr = [];
-			for (k in clients) if (clients.hasOwnProperty(k) && clients[k].online && !have[k] && clients[k].ip !== ADMIN_IP) arr.push(k);
-			arr.sort(function (a, b) { return (clients[a].name || 'zz').localeCompare(clients[b].name || 'zz'); });
-			for (i = 0; i < arr.length; i++) { opts += '<option value="' + arr[i] + '">' + esc((clients[arr[i]].name || arr[i]) + ' · ' + clients[arr[i]].ip) + '</option>'; n++; }
-		}
-		opts += '<option value="manual">手动填写 MAC 地址…</option>';
-		var keep = sel.value;
-		sel.innerHTML = opts;
-		sel.value = keep || '';
-		if (sel.value !== (keep || '')) sel.value = '';
-		var manualOnly = !clients || !n;
-		$i('clDevPick').hidden = manualOnly;
-		$i('clDevManual').hidden = !(manualOnly || sel.value === 'manual');
-		var manualShown = !$i('clDevManual').hidden;
-		$i('clDevNote').hidden = !manualShown;
+		setVal('clDevVal', (clients ? r.online + ' 台在线 · ' : '') + r.direct + ' 台直连');
+		var btns = $i('clDevList').querySelectorAll('button[data-mac]');
+		for (i = 0; i < btns.length; i++) btns[i].onclick = setDeviceRoute;
+		// 不在线的设备手动填 MAC；读不到在线设备时直接展开
+		var manual = clientsFailed || devManual;
+		$i('clDevManual').hidden = !manual;
+		$i('clDevManualBtn').hidden = manual;
+		$i('clDevNote').hidden = !manual;
 		$i('clDevNote').textContent = (clientsFailed ? '读不到路由器的在线设备列表，请手动填写。' : '') + 'MAC 地址形如 AA:BB:CC:DD:EE:FF，可以在「网络地图 › 客户端」里找到。';
 		setPend('devices', !!edit.devices && encodeDevices(edit.devices) !== (db.corpline_devices || ''));
 	}
-	function devRow(name, sub, right) { return '<div class="cl-dev"><div><b>' + esc(name) + '</b><span class="cl-num">' + esc(sub) + '</span></div>' + right + '</div>'; }
-	function removeDevice() {
-		var mac = this.getAttribute('data-rm'), list = devList().slice(), out = [], i;
-		for (i = 0; i < list.length; i++) if (list[i].mac !== mac) out.push(list[i]);
-		edit.devices = out; renderDevices();
+	var devManual = false;
+	function setDeviceRoute() {
+		var mac = this.getAttribute('data-mac'), want = this.getAttribute('data-v'), list = devList().slice(), out = [], i, has = false, c = clients && clients[mac];
+		for (i = 0; i < list.length; i++) { if (list[i].mac === mac) { has = true; if (want === 'direct') out.push(list[i]); } else out.push(list[i]); }
+		if (want === 'direct' && !has) {
+			var keep = parseDevices(db.corpline_devices), nm = c && c.name || '';
+			for (i = 0; i < keep.length; i++) if (keep[i].mac === mac && keep[i].name) nm = keep[i].name;
+			out.push({ mac: mac, name: nm, locked: false });
+		}
+		edit.devices = out; msg('devices', ''); renderDevices();
+		var again = $i('clDevList').querySelector('button[data-mac="' + mac + '"][data-v="' + want + '"]');
+		if (again) try { again.focus({ preventScroll: true }); } catch (e) { again.focus(); }
 	}
 	function addDevice() {
-		var sel = $i('clDevSel'), list = devList().slice(), mac, name, i;
-		var manual = !$i('clDevManual').hidden;
-		if (manual) {
-			mac = trim($i('clDevMac').value).toUpperCase().replace(/-/g, ':');
-			if (/^[0-9A-F]{12}$/.test(mac)) mac = mac.replace(/(..)(?!$)/g, '$1:');
-			name = trim($i('clDevName').value);
-			if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { bad('clDevMac', 'devices', 'MAC 地址的格式不对。'); return; }
-		} else {
-			mac = sel.value;
-			if (!mac || mac === 'manual') return;
-			name = clients[mac] && clients[mac].name || '';
-		}
-		for (i = 0; i < list.length; i++) if (list[i].mac === mac) { bad(manual ? 'clDevMac' : 'clDevSel', 'devices', '这台设备已经在列表里了。'); return; }
+		var list = devList().slice(), mac, name, i;
+		mac = trim($i('clDevMac').value).toUpperCase().replace(/-/g, ':');
+		if (/^[0-9A-F]{12}$/.test(mac)) mac = mac.replace(/(..)(?!$)/g, '$1:');
+		name = trim($i('clDevName').value);
+		if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { bad('clDevMac', 'devices', 'MAC 地址的格式不对。'); return; }
+		for (i = 0; i < list.length; i++) if (list[i].mac === mac) { bad('clDevMac', 'devices', '这台设备已经设成直连了。'); return; }
+		if (clients && clients[mac] && clients[mac].online && !name) name = clients[mac].name;
 		list.push({ mac: mac, name: name, locked: false });
-		edit.devices = list;
-		$i('clDevMac').value = ''; $i('clDevName').value = ''; sel.value = '';
+		edit.devices = list; msg('devices', '');
+		$i('clDevMac').value = ''; $i('clDevName').value = '';
 		renderDevices();
 	}
 
-	function domList() { return edit.domains || (db.corpline_overseas_domains || '').split(/[,\s]+/).filter(function (x) { return !!x; }); }
-	function renderDomains() {
-		var list = domList(), h = '', i, j;
-		for (i = 0; i < list.length; i++)
-			h += '<div class="cl-dev"><div><b>' + esc(list[i]) + '</b>' + (DOMAIN_NOTE[list[i]] ? '<span>' + DOMAIN_NOTE[list[i]] + '</span>' : '') + '</div><button type="button" class="cl-lnk" data-rm="' + esc(list[i]) + '">移除</button></div>';
-		if (!h) h = '<div class="cl-dev empty">没有例外，所有网站都用公司 DNS。</div>';
-		$i('clDomList').innerHTML = h;
-		var btns = $i('clDomList').getElementsByTagName('button');
-		for (j = 0; j < btns.length; j++) btns[j].onclick = function () {
-			var d = this.getAttribute('data-rm'), cur = domList(), out = [], k;
-			for (k = 0; k < cur.length; k++) if (cur[k] !== d) out.push(cur[k]);
-			edit.domains = out; renderDomains();
-		};
-		var v;
-		if (list.join(',') === DEFAULT_DOMAINS) v = 'Apple 官网与商店';
-		else if (!list.length) v = '无';
-		else v = list.length <= 2 ? list.join('、') : list.length + ' 个网站';
-		setVal('clDomVal', v);
-		setPend('domains', !!edit.domains && edit.domains.join(',') !== domList.saved());
+	/* 网站单独设置：直连 / 海外解析两张名单，同一个域名只能在一张里 */
+	var ROUTE = { direct: '直连', overseas: '海外解析', corp: '公司线路', internal: '公司内网' };
+	function splitList(s) { return String(s || '').split(/[,\s]+/).filter(function (x) { return !!x; }); }
+	function savedRules() {
+		var out = [], seen = {}, i, a = splitList(db.corpline_direct_domains), b = splitList(db.corpline_overseas_domains);
+		for (i = 0; i < a.length; i++) if (!seen[a[i]]) { seen[a[i]] = 1; out.push({ d: a[i], r: 'direct' }); }
+		for (i = 0; i < b.length; i++) if (!seen[b[i]]) { seen[b[i]] = 1; out.push({ d: b[i], r: 'overseas' }); }
+		return out;
 	}
-	domList.saved = function () { return (db.corpline_overseas_domains || '').split(/[,\s]+/).filter(function (x) { return !!x; }).join(','); };
+	function domRules() { return edit.domains || savedRules(); }
+	function rulesKey(list, r) { var o = [], i; for (i = 0; i < list.length; i++) if (list[i].r === r) o.push(list[i].d); return o.join(','); }
+	function ruleFor(d) {
+		var list = domRules(), best = null, i;
+		for (i = 0; i < list.length; i++)
+			if ((d === list[i].d || d.slice(-list[i].d.length - 1) === '.' + list[i].d) && (!best || list[i].d.length > best.d.length)) best = list[i];
+		return best;
+	}
+	function setRule(d, r) {
+		var list = domRules().slice(), i, found = false;
+		for (i = 0; i < list.length; i++) if (list[i].d === d) { list[i] = { d: d, r: r }; found = true; }
+		if (!found && r) list.push({ d: d, r: r });
+		if (!r) list = list.filter(function (x) { return x.d !== d; });
+		edit.domains = list; msg('domains', '');
+		renderDomains(); renderRecent();
+	}
+	function renderDomains() {
+		if (!dbLoaded) { renderLock(false); return; }
+		var list = domRules(), h = '', i, x, n = { direct: 0, overseas: 0 };
+		for (i = 0; i < list.length; i++) {
+			x = list[i]; n[x.r]++;
+			h += '<div class="cl-dev"><div><b>' + esc(x.d) + '</b>' + (DOMAIN_NOTE[x.d] ? '<span>' + DOMAIN_NOTE[x.d] + '</span>' : '') + '</div>' +
+				'<div class="cl-dev-r">' + seg(x.d + ' 怎么走', x.r, [['direct', '直连'], ['overseas', '海外解析']], ' data-dom="' + esc(x.d) + '"') +
+				'<button type="button" class="cl-lnk" data-rm="' + esc(x.d) + '">移除</button></div></div>';
+		}
+		if (!h) h = '<div class="cl-dev empty">没有单独设置的网站，都按默认走公司线路和公司 DNS。</div>';
+		$i('clDomList').innerHTML = h;
+		var b = $i('clDomList').getElementsByTagName('button'), j;
+		for (j = 0; j < b.length; j++) {
+			if (b[j].getAttribute('data-rm')) b[j].onclick = function () { setRule(this.getAttribute('data-rm'), ''); };
+			else b[j].onclick = function () { setRule(this.getAttribute('data-dom'), this.getAttribute('data-v')); };
+		}
+		var v = [];
+		if (n.direct) v.push('直连 ' + n.direct);
+		if (n.overseas) v.push('海外解析 ' + n.overseas);
+		setVal('clDomVal', v.length ? v.join(' · ') : '无');
+		var segs = $i('clDomAddSeg').getElementsByTagName('button');
+		for (j = 0; j < segs.length; j++) segs[j].setAttribute('aria-checked', segs[j].getAttribute('data-v') === addRoute ? 'true' : 'false');
+		var s = savedRules();
+		setPend('domains', !!edit.domains && (rulesKey(list, 'direct') !== rulesKey(s, 'direct') || rulesKey(list, 'overseas') !== rulesKey(s, 'overseas')));
+	}
+	var addRoute = 'direct';
 	function addDomain() {
 		var v = trim($i('clDomIn').value).toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[\/?#:].*$/, '').replace(/^\*\./, '').replace(/^www\./, '').replace(/\.$/, '');
 		if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(v)) { bad('clDomIn', 'domains', '请填网址里的域名部分，例如 nintendo.co.jp。'); return; }
-		var list = domList().slice();
-		if (list.indexOf(v) >= 0) { bad('clDomIn', 'domains', v + ' 已经在列表里了。'); return; }
-		list.push(v); edit.domains = list; $i('clDomIn').value = ''; renderDomains();
+		var list = domRules(), i;
+		for (i = 0; i < list.length; i++) if (list[i].d === v && list[i].r === addRoute) { bad('clDomIn', 'domains', v + ' 已经设成' + ROUTE[addRoute] + '了。'); return; }
+		$i('clDomIn').value = '';
+		setRule(v, addRoute);
+	}
+
+	/* 最近访问的网站：面板打开、页面在前台时每 5 秒读一次 */
+	var rec = { code: 0, items: [], updated: 0, at: 0 }, recLimit = 30, recTimer = null, recBusy = false;
+	function recOpen() { return $i('r-global').className.indexOf(' open') >= 0 && !document.hidden; }
+	function syncRecent() {
+		clearTimeout(recTimer); recTimer = null;
+		if (!recOpen()) return;
+		if (!recBusy) loadRecent();
+	}
+	function loadRecent() {
+		recBusy = true;
+		getJSON('/_temp/corpline_domains.json', function (code, o) {
+			recBusy = false;
+			if (o && o.items && o.items.length !== undefined) { rec = { code: 200, items: o.items, updated: num(o.updated), at: Date.now() }; }
+			else rec = { code: code === 404 ? 404 : -1, items: rec.code === 200 && code !== 404 ? rec.items : [], updated: rec.updated, at: rec.at };
+			renderRecent();
+			clearTimeout(recTimer);
+			recTimer = recOpen() ? setTimeout(loadRecent, POLL_MS) : null;
+		});
+	}
+	function ago(t) {
+		var s = (rec.updated || Date.now() / 1000) - num(t) + (Date.now() - rec.at) / 1000;
+		if (s < 60) return '刚刚';
+		if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+		if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+		return Math.floor(s / 86400) + ' 天前';
+	}
+	function renderRecent() {
+		var box = $i('clRecList'), q = trim($i('clRecQ').value).toLowerCase(), h = '', i, it, d, shown = 0, total = 0, r, note = '';
+		if (rec.code === 404) note = '插件运行时才有记录。';
+		else if (rec.code === -1 && !rec.items.length) note = '暂时读不到最近访问的网站，稍后会自动再试。';
+		else if (rec.code === 200 && !rec.items.length) note = '还没有记录。家里有设备上网后，这里会列出最近访问的网站。';
+		for (i = 0; i < rec.items.length && !note; i++) {
+			it = rec.items[i] || {}; d = String(it.d || '').toLowerCase();
+			if (!d || (q && d.indexOf(q) < 0)) continue;
+			total++;
+			if (shown >= recLimit) continue;
+			shown++;
+			r = ruleFor(d);
+			var c = ROUTE[it.c] || '公司线路';
+			h += '<div class="cl-dev"><div><button type="button" class="cl-dname" data-copy="' + esc(d) + '" title="填到上面的输入框">' + esc(d) + '</button>' +
+				'<span class="cl-num">' + ago(it.t) + ' · ' + num(it.n) + ' 次<i class="cl-tag">' + c + '</i></span></div>' +
+				(r ? '<span class="tag">' + (r.d === d ? '已设为' + ROUTE[r.r] : '按 ' + esc(r.d) + ' ' + ROUTE[r.r]) + (edit.domains ? '（未保存）' : '') + '</span>'
+					: '<div class="cl-dev-r"><button type="button" class="cl-lnk" data-quick="direct" data-d="' + esc(d) + '">直连</button><button type="button" class="cl-lnk" data-quick="overseas" data-d="' + esc(d) + '">海外解析</button></div>') + '</div>';
+		}
+		if (!note && rec.code === 200 && !total) note = '没有包含「' + q + '」的网站。';
+		if (!note && !rec.code) note = '正在读取…';
+		if (note) h = '<div class="cl-dev empty">' + esc(note) + '</div>';
+		if (box.getAttribute('data-h') !== h) {
+			box.innerHTML = h; box.setAttribute('data-h', h);
+			var b = box.getElementsByTagName('button'), j;
+			for (j = 0; j < b.length; j++) {
+				if (b[j].getAttribute('data-copy')) b[j].onclick = function () { var inp = $i('clDomIn'); inp.value = this.getAttribute('data-copy'); inp.focus(); try { inp.setSelectionRange(0, inp.value.length); } catch (e) {} };
+				else b[j].onclick = function () { setRule(this.getAttribute('data-d'), this.getAttribute('data-quick')); };
+			}
+		}
+		var more = total - shown;
+		$i('clRecMore').hidden = !(more > 0);
+		$i('clRecMore').textContent = '显示更多（还有 ' + more + ' 个）';
+		$i('clRecSearch').hidden = rec.code !== 200 || !rec.items.length;
 	}
 
 	function notifyCur() { return edit.notify || { mode: db.corpline_notify || 'off', url: db.corpline_notify_url || '' }; }
@@ -716,6 +857,55 @@ var CL = (function () {
 	function renderToggles() {
 		var t = $i('clCn');
 		if (t.className.indexOf('busy') < 0) t.setAttribute('aria-checked', db.corpline_cn_direct === '1' ? 'true' : 'false');
+		renderCnList();
+	}
+
+	// 中国服务名单：有多少、哪天的、正在下载、上次为什么没下成（路由器写在 corpline_cn_*）
+	var cnTimer = null;
+	function dayLabel(t) {
+		var d = new Date(t * 1000), today = dayStart(new Date()), day = dayStart(d);
+		if (day === today) return '今天';
+		if (day === today - 86400000) return '昨天';
+		return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+	}
+	function thousands(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+	function cnState() {
+		var s = db.corpline_cn_state || '', tried = num(db.corpline_cn_tried);
+		// 下载进程被打断（路由器重启等）会停在 downloading：超过 10 分钟就当作没成功
+		if (s === 'downloading' && tried && Date.now() / 1000 - tried > 600) return 'stalled';
+		return s;
+	}
+	function renderCnList() {
+		var box = $i('clCnSt'), tx = $i('clCnTx'), btn = $i('clCnUpd');
+		var on = dbLoaded && db.corpline_cn_direct === '1', s = cnState();
+		var n = num(db.corpline_cn_count), t = num(db.corpline_cn_time), have = n > 0;
+		var cls = '', text, label = '立即更新';
+		box.hidden = !on;
+		clearTimeout(cnTimer); cnTimer = null;
+		if (!on) return;
+		if (s === 'downloading') {
+			text = have ? '正在下载最新名单…（现在用的是' + (t ? dayLabel(t) : '旧') + '的名单）' : '正在下载名单…下载好会自动生效';
+			label = '';
+			cnTimer = setTimeout(function () { if (!document.hidden) loadDbus(renderAll); else renderCnList(); }, 3000);
+		} else if (s === 'failed' || s === 'stalled') {
+			var why = s === 'stalled' ? '下载被中断' : db.corpline_cn_error || '下载出错';
+			var at = num(db.corpline_cn_tried);
+			cls = have ? 'warn' : 'err';
+			text = have ? '名单更新没成功：' + why + (at ? '（' + whenLabel(at) + '）' : '') + '，继续用' + (t ? dayLabel(t) : '旧') + '的名单'
+				: '名单下载没成功：' + why + (at ? '（' + whenLabel(at) + '）' : '') + '，国内网站直连暂不生效';
+			label = '重试';
+		} else if (have) {
+			text = '名单 ' + thousands(n) + ' 个网站 · ' + (db.corpline_cn_src === 'bundle' ? '安装包自带' + (t ? '，' + dayLabel(t) : '')
+				: (t ? dayLabel(t) + '更新' : '已下载')) + ' · 每周一凌晨自动更新';
+		} else {
+			text = '还没有名单，国内网站直连暂不生效';
+			cls = 'err';
+			label = '下载';
+		}
+		box.className = 'cl-cnst' + (cls ? ' ' + cls : '');
+		tx.textContent = text;
+		btn.hidden = !label;
+		btn.textContent = label;
 	}
 
 	function setPend(which, on) {
@@ -756,7 +946,7 @@ var CL = (function () {
 	function renderSettings() {
 		if (!dbLoaded) { renderLock(true); return; }
 		renderLock(false);
-		renderAccount(); renderDevices(); renderDomains(); renderNotify(); renderAdv(); renderToggles();
+		renderAccount(); renderDevices(); renderDomains(); renderNotify(); renderAdv(); renderToggles(); renderRecent();
 	}
 	// 还没成功读到过设置：值一律显示「—」（不是「未填写」），设置行和国内直连开关先锁住，免得用空快照保存
 	var locked = null;
@@ -850,7 +1040,9 @@ var CL = (function () {
 			over.corpline_devices = encodeDevices(devList());
 			after = function () { edit.devices = null; };
 		} else if (which === 'domains') {
-			over.corpline_overseas_domains = domList().join(',');
+			var rl = domRules();
+			over.corpline_direct_domains = rulesKey(rl, 'direct');
+			over.corpline_overseas_domains = rulesKey(rl, 'overseas');
 			after = function () { edit.domains = null; };
 		} else if (which === 'notify') {
 			var n = notifyCur(); n.url = trim($i('f-hook').value);
@@ -902,6 +1094,16 @@ var CL = (function () {
 		});
 	}
 
+	function onCnUpd() {
+		if (inflight || !dbLoaded) return;
+		submit(6, null, function (ok) {
+			if (!ok) { flash(failText()); return; }
+			db.corpline_cn_state = 'downloading';
+			db.corpline_cn_tried = String(Math.floor(Date.now() / 1000));
+			renderCnList();
+		});
+	}
+
 	/* ---------- 行展开 ---------- */
 	function openRow(id, force, quiet) {
 		var r = $i(id), open = force === undefined ? r.className.indexOf(' open') < 0 : force;
@@ -912,6 +1114,7 @@ var CL = (function () {
 		if (p) p.setAttribute('d', open ? 'M4 6l4 4 4-4' : 'M6 4l4 4-4 4');
 		var inner = r.getElementsByClassName('cl-body')[0];
 		if (inner) inner.setAttribute('aria-hidden', open ? 'false' : 'true');
+		if (id === 'r-global') syncRecent();
 		if (open && force && !quiet && r.scrollIntoView) {
 			var reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 			setTimeout(function () { try { r.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' }); } catch (e) { r.scrollIntoView(); } }, 60);
@@ -982,6 +1185,7 @@ var CL = (function () {
 	}
 	// 页面在后台时不读；切回来马上读一次，读到之前先不刷新状态卡，免得闪一下「没有在运行」
 	function onVisible() {
+		syncRecent();
 		if (document.hidden) { clearTimeout(pollTimer); pollTimer = null; return; }
 		if (!polling) { waitPoll = true; loop(); }
 	}
@@ -990,6 +1194,7 @@ var CL = (function () {
 	function bind() {
 		$i('clMaster').onclick = onMaster;
 		$i('clCn').onclick = onCn;
+		$i('clCnUpd').onclick = onCnUpd;
 		$i('clLogBtn').onclick = toggleLog;
 		var heads = document.querySelectorAll('.cl .cl-row:not(.static) > .cl-row-h'), i;
 		for (i = 0; i < heads.length; i++) heads[i].onclick = function () { openRow(this.parentNode.id); };
@@ -1001,10 +1206,13 @@ var CL = (function () {
 			$i('clSave-' + w).onclick = function () { saveRow(w); };
 			var u = $i('clUndo-' + w); if (u) u.onclick = function () { undoRow(w); };
 		})(saves[i]);
-		$i('clDevAdd').onclick = addDevice;
 		$i('clDevAddM').onclick = addDevice;
-		$i('clDevSel').onchange = function () { renderDevices(); if (this.value === 'manual') $i('clDevName').focus(); };
+		$i('clDevManualBtn').onclick = function () { devManual = true; renderDevices(); focusLater('clDevName'); };
 		$i('clDomAdd').onclick = addDomain;
+		var as = $i('clDomAddSeg').getElementsByTagName('button');
+		for (i = 0; i < as.length; i++) as[i].onclick = function () { addRoute = this.getAttribute('data-v'); renderDomains(); };
+		$i('clRecQ').oninput = function () { recLimit = 30; renderRecent(); };
+		$i('clRecMore').onclick = function () { recLimit += 30; renderRecent(); };
 		$i('clNtTest').onclick = testNotify;
 		$i('clDomIn').onkeydown = function (e) { if ((e || window.event).keyCode === 13) addDomain(); };
 		$i('clDevMac').onkeydown = function (e) { if ((e || window.event).keyCode === 13) addDevice(); };
@@ -1097,30 +1305,38 @@ function menu_hook() {
     </div>
 
     <div class="cl-row" id="r-devices">
-      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>始终直连的设备</b><span>这些设备不走公司线路</span></span><span class="val cl-num" id="clDevVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>家里的设备</b><span>每台设备走哪条线</span></span><span class="val cl-num" id="clDevVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
       <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in">
         <div id="clDevList"></div>
-        <div class="cl-add" id="clDevPick"><select class="cl-in" id="clDevSel" aria-label="选择要直连的设备"></select><button type="button" class="cl-btn sec" id="clDevAdd">添加</button></div>
-        <div class="cl-add" id="clDevManual" hidden><input class="cl-in" id="clDevName" placeholder="名字，例如 NAS" aria-label="设备名字"><input class="cl-in cl-num" id="clDevMac" placeholder="MAC 地址" aria-label="MAC 地址" spellcheck="false"><button type="button" class="cl-btn sec" id="clDevAddM">添加</button></div>
+        <button type="button" class="cl-lnk cl-more" id="clDevManualBtn">手动添加不在线的设备…</button>
+        <div class="cl-add" id="clDevManual" hidden><input class="cl-in" id="clDevName" placeholder="名字，例如 NAS" aria-label="设备名字"><input class="cl-in cl-num" id="clDevMac" placeholder="MAC 地址" aria-label="MAC 地址" spellcheck="false"><button type="button" class="cl-btn sec" id="clDevAddM">设为直连</button></div>
         <p class="cl-msg err cl-rowmsg" id="clMsg-devices" role="status"></p>
         <p class="cl-hint" id="clDevNote" hidden></p>
+        <p class="cl-hint">直连的设备不走公司线路，直接用家里宽带上网。</p>
         <div class="cl-pend" id="clPend-devices" aria-hidden="true"><div><div class="cl-acts"><button type="button" class="cl-btn pri" id="clSave-devices" tabindex="-1">保存</button><button type="button" class="cl-btn sec" id="clUndo-devices" tabindex="-1">撤销</button><span class="cl-msg cl-pend-hint"></span></div></div></div>
       </div></div></div>
     </div>
 
     <div class="cl-row" id="r-global">
-      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>用海外解析的网站</b><span>公司 DNS 会给少数网站分到国内节点，这里的网站改用海外节点</span></span><span class="val" id="clDomVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
+      <button type="button" class="cl-row-h" aria-expanded="false"><span class="lb"><b>网站单独设置</b><span>个别网站改走直连，或改用海外解析</span></span><span class="val cl-num" id="clDomVal"></span><svg class="cl-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg></button>
       <div class="cl-body" aria-hidden="true"><div><div class="cl-xp-in">
+        <div class="cl-subh">已设置</div>
         <div id="clDomList"></div>
-        <div class="cl-add"><input class="cl-in" id="clDomIn" placeholder="添加网址，例如 nintendo.co.jp" aria-label="添加网址" spellcheck="false"><button type="button" class="cl-btn sec" id="clDomAdd">添加</button></div>
+        <div class="cl-add"><input class="cl-in" id="clDomIn" placeholder="添加网址，例如 nintendo.co.jp" aria-label="添加网址" spellcheck="false"><div class="cl-seg q" id="clDomAddSeg" role="radiogroup" aria-label="添加为"><button type="button" role="radio" aria-checked="true" data-v="direct">直连</button><button type="button" role="radio" aria-checked="false" data-v="overseas">海外解析</button></div><button type="button" class="cl-btn sec" id="clDomAdd">添加</button></div>
         <p class="cl-msg err cl-rowmsg" id="clMsg-domains" role="status"></p>
-        <p class="cl-hint">其他网站都用公司 DNS，公司已经处理好国内外线路。系统更新下载没有放进来：国内节点下载更快，内容一样。</p>
+        <p class="cl-hint">直连：不走公司线路，直接用家里宽带。海外解析：还走公司线路，只是改用海外节点，适合被分到国内节点的海外网站。</p>
         <div class="cl-pend" id="clPend-domains" aria-hidden="true"><div><div class="cl-acts"><button type="button" class="cl-btn pri" id="clSave-domains" tabindex="-1">保存</button><button type="button" class="cl-btn sec" id="clUndo-domains" tabindex="-1">撤销</button><span class="cl-msg cl-pend-hint"></span></div></div></div>
+        <div class="cl-subh">最近访问</div>
+        <div class="cl-add" id="clRecSearch" hidden><input class="cl-in" id="clRecQ" type="search" placeholder="搜索网址，例如 qq" aria-label="搜索最近访问的网站" spellcheck="false" autocomplete="off"></div>
+        <div id="clRecList"></div>
+        <button type="button" class="cl-lnk cl-more" id="clRecMore" hidden></button>
+        <p class="cl-hint">规则对子域名同样生效；想放宽范围，在上面输入上一级域名，例如 qq.com。</p>
       </div></div></div>
     </div>
 
     <div class="cl-row static" id="r-cn">
       <div class="cl-row-h"><span class="lb"><b>国内网站直连</b><span>淘宝、B 站、微信这类国内服务不经过公司线路，用满家里宽带。Apple、Sony 等海外服务不受影响。</span></span><button type="button" class="cl-tg" id="clCn" role="switch" aria-checked="false" aria-label="国内网站直连"></button></div>
+      <div class="cl-cnst" id="clCnSt" hidden><span class="tx" id="clCnTx" role="status"></span><button type="button" class="cl-lnk" id="clCnUpd">立即更新</button></div>
     </div>
 
     <div class="cl-row" id="r-notify">

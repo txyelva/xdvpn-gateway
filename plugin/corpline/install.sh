@@ -31,6 +31,22 @@ put() {
 	cp -f "$1" "$2.new" && chmod "$3" "$2.new" && mv -f "$2.new" "$2" || fail "复制 $(basename $1) 失败（存储空间不足？）"
 }
 
+# 安装包自带的中国服务名单：路由器上没有、或比路由器上那份新才换上（路由器每周自己更新过的更新就保留）
+install_cn() {
+	local src=$DIR/configs/china-domains.conf dst=/koolshare/configs/corpline/china-domains.conf bt ct
+	[ -s $src ] || return 0
+	bt=$(date -r $src +%s 2>/dev/null)
+	ct=$(dbus get corpline_cn_time)
+	if [ ! -s $dst ] || [ "${bt:-0}" -gt "${ct:-0}" ]; then
+		put $src $dst 644
+		dbus set corpline_cn_count=$(wc -l <$dst)
+		dbus set corpline_cn_time=$bt
+		dbus set corpline_cn_src=bundle
+		dbus set corpline_cn_state=ok
+		dbus remove corpline_cn_error
+	fi
+}
+
 install_now() {
 	if [ -f /koolshare/scripts/corpline_config.sh ]; then
 		echo_date "检测到旧版本，先停止运行中的服务…"
@@ -43,7 +59,7 @@ install_now() {
 	put $DIR/webs/Module_corpline.asp /koolshare/webs/Module_corpline.asp 644
 	put $DIR/res/icon-corpline.png /koolshare/res/icon-corpline.png 644
 	[ -f $DIR/res/corpline-bg.png ] && put $DIR/res/corpline-bg.png /koolshare/res/corpline-bg.png 644
-	[ -f $DIR/configs/china-domains.conf ] && put $DIR/configs/china-domains.conf /koolshare/configs/corpline/china-domains.conf 644
+	install_cn
 	put $DIR/uninstall.sh /koolshare/scripts/uninstall_corpline.sh 755
 
 	# 默认值只在第一次安装时写：之后用户清空的项（例如"走海外 DNS 的域名"）升级时不会被填回去

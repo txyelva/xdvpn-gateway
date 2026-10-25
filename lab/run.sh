@@ -45,6 +45,9 @@ scenario_install() {
 	local d=$(diff <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s0.txt) <(sed -n '/## iptables/,/## dnsmasq.d/p' $S/s1.txt) | grep -c '^[<>]')
 	check "安装后网络改动条数" "$d" 0
 	check "未启用时设备线路" "$(path lan1 100.64.2.80)" direct
+	local n=$(wc -l </koolshare/configs/corpline/china-domains.conf 2>/dev/null)
+	[ "${n:-0}" -ge 50000 ] && ok "安装包自带中国服务名单：$n 条" || bad "安装包没带中国服务名单（${n:-0} 条）"
+	check "名单状态（网页显示用）" "$(/koolshare/bin/dbus get corpline_cn_state)/$(/koolshare/bin/dbus get corpline_cn_src)/$(/koolshare/bin/dbus get corpline_cn_count)" "ok/bundle/$n"
 	mkdir -p /koolshare/configs/corpline
 	printf 'cafile=%s\noc_ld_library_path=\nisp_dns_file=%s\n' $S/pki/ca.pem $S/resolv.dnsmasq >/koolshare/configs/corpline/lab.conf
 }
@@ -351,11 +354,20 @@ scenario_cn_direct() {
 	CASE="国内网站直连"
 	fresh_active
 	mkdir -p /koolshare/configs/corpline
-	printf 'server=/baidu.com/114.114.114.114\nserver=/qq.com/114.114.114.114\n' >/koolshare/configs/corpline/china-domains.conf
+	# 名单缺失时开启：时间线提示暂不生效；名单到位重启后补一条"已就绪"
+	mv -f /koolshare/configs/corpline/china-domains.conf /tmp/cn.keep 2>/dev/null
+	dbset corpline_cn_direct=1
+	api 1
+	wait_state active 60 >/dev/null
+	timeline_has "没有找到中国服务名单" && ok "名单缺失时时间线有提示" || bad "名单缺失时时间线没有提示"
+	pkill -f "corpline_config.sh update_cn" 2>/dev/null; rm -f /var/run/corpline/cn.pid
+	# 安装包自带的是每行一个域名，旧版下载的是 server=/域名/IP，两种都要认
+	printf 'baidu.com\nserver=/qq.com/114.114.114.114\n' >/koolshare/configs/corpline/china-domains.conf
 	for i in $(seq 1 1100); do echo "server=/cn-filler-$i.com/114.114.114.114"; done >>/koolshare/configs/corpline/china-domains.conf
 	dbset corpline_cn_direct=1
 	api 1
 	wait_state active 60 >/dev/null
+	timeline_has "中国服务名单已就绪" && ok "名单到位后时间线写明已生效" || bad "名单到位后时间线没有写明已生效"
 	check "中国服务域名由谁解析" "$(resolve x www.baidu.com)" 100.64.2.80
 	check "访问中国服务（按域名进 ipset）" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.0.2
 	check "其它网站仍走公司线路" "$(path lan1 100.64.2.81)" tunnel
@@ -502,7 +514,54 @@ scenario_nasty() {
 	ok "改回正常设置后恢复：${t} 秒"
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct resources nasty upgrade bootloop disable_uninstall"
+# 网页「立即更新」名单：沙盒里连不上外网，应当显示失败原因、保留旧名单、不卡在"正在下载"
+scenario_cn_update() {
+	CASE="更新中国服务名单"
+	local L=/koolshare/configs/corpline/china-domains.conf before=$(md5sum </koolshare/configs/corpline/china-domains.conf) i=0 st
+	api 6
+	check "点了之后立刻显示正在下载" "$(/koolshare/bin/dbus get corpline_cn_state)" downloading
+	while [ $i -lt 120 ] && [ "$(/koolshare/bin/dbus get corpline_cn_state)" = downloading ]; do sleep 1; i=$((i + 1)); done
+	st=$(/koolshare/bin/dbus get corpline_cn_state)
+	ok "下载结束用时 ${i} 秒，结果 $st（$(/koolshare/bin/dbus get corpline_cn_error)）"
+	case $st in
+	failed)
+		[ -n "$(/koolshare/bin/dbus get corpline_cn_error)" ] && ok "失败原因已记录" || bad "失败但没有原因"
+		check "失败时旧名单保留" "$(md5sum <$L)" "$before"
+		;;
+	ok) ok "下载成功：$(wc -l <$L) 个网站" ;;
+	*) bad "下载状态异常：$st" ;;
+	esac
+	check "下载进程已退出" "$(cat /var/run/corpline/cn.pid 2>/dev/null)" ""
+	[ -n "$(cl_pid)" ] && ok "守护程序仍在运行" || bad "守护程序不在了"
+}
+
+scenario_direct_domain() {
+	CASE="网站单独设为直连"
+	fresh_active
+	dbset corpline_cn_direct=0
+	dbset corpline_direct_domains=baidu.com
+	api 1
+	wait_state active 60 >/dev/null
+	check "设为直连的网站由谁解析（运营商）" "$(resolve x www.baidu.com)" 100.64.2.80
+	check "访问设为直连的网站" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.0.2
+	check "其它网站仍走公司线路" "$(path lan1 100.64.2.81)" tunnel
+	sleep 11
+	check "最近访问列表里有它，标为直连" "$(jq -r '.items[] | select(.d=="www.baidu.com") | .c' /tmp/upload/corpline_domains.json 2>/dev/null)" direct
+	check "最近访问列表按时间倒序" "$(jq -r '[.items[].t] | . == (sort | reverse)' /tmp/upload/corpline_domains.json 2>/dev/null)" true
+	dbset corpline_direct_domains=
+	api 1
+	wait_state active 60 >/dev/null
+	check "取消后走公司线路" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.1.10
+	dbset corpline_enable=0
+	api 1
+	sleep 1
+	check "关闭后最近访问记录被删除" "$(ls /tmp/upload/corpline_domains.json 2>/dev/null | wc -l)" 0
+	dbset corpline_enable=1
+	api 1
+	wait_state active 60 >/dev/null
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

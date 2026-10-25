@@ -27,7 +27,7 @@ rm -f /koolshare/init.d/S96corpline.sh /koolshare/init.d/N96corpline.sh
 rm -f /koolshare/bin/corpline /koolshare/scripts/corpline_config.sh
 rm -f /koolshare/webs/Module_corpline.asp /koolshare/res/icon-corpline.png /koolshare/res/corpline-bg.png
 rm -rf /koolshare/configs/corpline $RUN /var/lock/corpline.lock
-rm -f /tmp/upload/corpline_status.json /tmp/upload/corpline_log.txt /tmp/upload/corpline_log.txt.1
+rm -f /tmp/upload/corpline_status.json /tmp/upload/corpline_domains.json /tmp/upload/corpline_log.txt /tmp/upload/corpline_log.txt.1
 
 echo_date "清理设置…"
 for v in $(dbus list corpline_ | cut -d= -f1); do dbus remove $v; done

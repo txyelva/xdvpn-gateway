@@ -8,6 +8,7 @@
 pub mod domains;
 pub mod msg;
 pub mod plan;
+pub mod recent;
 
 use domains::SuffixSet;
 use plan::{Class, Kind, Tier, Verdict};
@@ -76,6 +77,10 @@ impl Shared {
 
 pub struct Static {
     pub overseas: SuffixSet,
+    /// 用户单独设为直连的网站
+    pub direct: SuffixSet,
+    /// 最近访问域名的输出文件（内存盘）
+    pub recent_file: Option<std::path::PathBuf>,
     pub cn: Option<SuffixSet>,
     pub filter_aaaa: bool,
     pub cn_ipset: String,
@@ -152,6 +157,7 @@ pub struct Engine {
     ipset_tx: mpsc::Sender<Job>,
     tcp_busy: Arc<AtomicUsize>,
     kind_health: HashMap<Kind, bool>,
+    recent: recent::Recent,
 }
 
 impl Engine {
@@ -164,6 +170,7 @@ impl Engine {
         let (tx, rx) = mpsc::channel::<Job>();
         let out = udp.try_clone()?;
         let set = st.cn_ipset.clone();
+        let recent = recent::Recent::new(st.recent_file.clone());
         std::thread::Builder::new().name("ipset".into()).stack_size(64 * 1024).spawn(move || ipset_worker(rx, out, set))?;
         Ok(Engine {
             shared,
@@ -180,6 +187,7 @@ impl Engine {
             ipset_tx: tx,
             tcp_busy: Arc::new(AtomicUsize::new(0)),
             kind_health: HashMap::new(),
+            recent,
         })
     }
 
@@ -320,6 +328,7 @@ impl Engine {
             if ready[1] {
                 self.accept_tcp();
             }
+            self.recent.flush(sys::now_ms());
             for (k, &i) in map.iter().enumerate() {
                 if !ready[k + 2] {
                     continue;
@@ -387,7 +396,8 @@ impl Engine {
             return;
         }
         let tunneled = self.view.tunneled;
-        let class = plan::classify(&question.name, &self.internal, &self.st.overseas, self.st.cn.as_ref());
+        let class = plan::classify(&question.name, &self.internal, &self.st.direct, &self.st.overseas, self.st.cn.as_ref());
+        self.recent.record(&question.name, class, sys::wall_secs());
         let mut tiers = plan::plan(class, tunneled);
         if tunneled && !self.ups.iter().any(|u| u.kind.via_tunnel() && u.sock.is_some()) {
             // 隧道刚断、状态还没切过来：直接问运营商
@@ -698,7 +708,7 @@ fn serve_tcp(mut client: TcpStream, ctx: &TcpCtx) -> std::io::Result<()> {
     if ctx.st.filter_aaaa && question.qtype == msg::TYPE_AAAA {
         return write_frame(&mut client, &msg::reply_empty(&q, 0).unwrap_or_default());
     }
-    let class = plan::classify(&question.name, &ctx.internal, &ctx.st.overseas, ctx.st.cn.as_ref());
+    let class = plan::classify(&question.name, &ctx.internal, &ctx.st.direct, &ctx.st.overseas, ctx.st.cn.as_ref());
     let v = &ctx.view;
     let mut tiers = plan::plan(class, v.tunneled);
     if v.tunneled && v.tun_dev.is_none() {
