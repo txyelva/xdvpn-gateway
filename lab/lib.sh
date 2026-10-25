@@ -62,6 +62,10 @@ ks_install() {
 	rm -rf /tmp/corpline /tmp/corpline.tar.gz
 	cp ../corpline.tar.gz /tmp/corpline.tar.gz
 	tar -C /tmp -xzf /tmp/corpline.tar.gz
+	# 与真实 ks_tar_install.sh 相同的拒装条件
+	grep -q hnd /tmp/corpline/.valid 2>/dev/null || { echo "你上传的离线安装包不是ASUS hnd平台的离线包！！！"; rm -rf /tmp/corpline*; return 1; }
+	[ -f /tmp/corpline/webs/Module_corpline.asp ] && [ -d /tmp/corpline/scripts ] || { echo "没有找到插件的web页面或脚本"; rm -rf /tmp/corpline*; return 1; }
+	! grep -q "detect_package\|ks_tar_install" /tmp/corpline/install.sh || { echo "安装脚本会修改软件中心"; rm -rf /tmp/corpline*; return 1; }
 	rt busybox sh /tmp/corpline/install.sh
 	local rc=$?
 	rm -rf /tmp/corpline*

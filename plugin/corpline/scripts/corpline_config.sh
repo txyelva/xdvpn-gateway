@@ -325,6 +325,28 @@ pause() {
 	do_notify "已自动停用（$1），全家已恢复直连。到路由器的插件页面点「重新启用」即可。"
 }
 
+# 本插件用到的内核模块：华硕固件默认不一定全加载（旧版 xdvpn-router 真机经验）
+load_modules() {
+	local os=$(uname -r) mod ko
+	modprobe tun >/dev/null 2>&1
+	for mod in ip_set ip_set_hash_net ip_set_hash_ip xt_set xt_mark xt_connmark xt_mac xt_state xt_TCPMSS xt_addrtype; do
+		lsmod | grep -q "^$mod " && continue
+		modprobe $mod >/dev/null 2>&1 && continue
+		ko=$(find /lib/modules/$os -name "$mod.ko" 2>/dev/null | head -n1)
+		[ -n "$ko" ] && insmod $ko >/dev/null 2>&1
+	done
+}
+
+# 开机早期 nat 表可能还没就绪：等它就绪再动防火墙（最多 120 秒）
+wait_nat_ready() {
+	local i=0
+	until iptables -t nat -L PREROUTING -n >/dev/null 2>&1; do
+		i=$((i + 1))
+		[ $i -ge 120 ] && { say "防火墙 nat 表 120 秒仍未就绪，本次不启动"; return 1; }
+		sleep 1
+	done
+}
+
 do_start() {
 	[ "$corpline_enable" = "1" ] || return 0
 	if [ "$corpline_paused" = "1" ]; then
@@ -340,6 +362,8 @@ do_start() {
 			/bin/sh $KSROOT/scripts/corpline_config.sh update_cn
 		) >/dev/null 2>&1 &
 	fi
+	load_modules
+	wait_nat_ready || return 1
 	start_daemon
 }
 

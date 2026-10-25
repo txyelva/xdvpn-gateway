@@ -17,7 +17,7 @@ fail() {
 
 platform_test() {
 	local kv=$(uname -r | awk -F. '{print $1*100+$2}')
-	[ -d /koolshare ] || fail "没有找到软件中心目录 /koolshare，本插件只适用于 koolcenter 固件。"
+	[ -d /koolshare ] && [ -f /usr/bin/skipd ] || fail "没有找到软件中心（/koolshare、skipd），本插件只适用于 koolcenter 固件。"
 	[ "$kv" -ge 401 ] || fail "内核版本过旧（$(uname -r)），本插件适用于 hnd/axhnd 平台。"
 	case "$(uname -m)" in
 	aarch64 | armv8*) ;;
