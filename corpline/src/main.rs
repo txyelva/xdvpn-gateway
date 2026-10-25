@@ -726,8 +726,10 @@ impl Daemon {
         }
         let (Some(t), Some(o)) = (&self.tunnel, &self.oc) else { return };
         let Some(tx) = sys::if_counter(&t.dev, "tx_bytes") else { return };
+        let dropped = sys::if_counter(&t.dev, "tx_dropped").unwrap_or(0);
         let mbit = |k: u32| format!("{:.1} Mbit/s", k as f64 / 1000.0);
-        match self.shaper.observe(now, tx, net::oc_sendq(o.pid)) {
+        let before = self.shaper.limit;
+        match self.shaper.observe(now, tx, dropped, net::oc_sendq(o.pid)) {
             Some(shaper::Change::Set(l, first)) => {
                 if !net::shape_set(&t.dev, l) {
                     // 没装上就当没限：下次占满再试，也让"开始限速"的提醒在真正生效时才出现；失败只记一次
@@ -743,7 +745,11 @@ impl Daemon {
                     self.tl.push(Level::Info, &format!("有设备在往公司线路大量上传，把线路占满了（实际约 {}）：已把上传限到 {}、各设备轮流发，其它设备不再被拖慢", cap, lim));
                     self.dirty = true;
                 }
-                report::log(&format!("公司线路上传占满（实际约 {}），限到 {}", cap, lim));
+                if before.map_or(false, |b| l > b) {
+                    report::log(&format!("公司线路上传没再积压，上限放宽到 {}", lim));
+                } else {
+                    report::log(&format!("公司线路上传占满（实际约 {}），限到 {}", cap, lim));
+                }
             }
             None => {}
             Some(shaper::Change::Off) => {
@@ -828,6 +834,8 @@ impl Daemon {
                 .s("domain", &t.domain)
                 .ob("dtls", oc.and_then(|o| o.dtls))
                 .n("up_limit_kbit", self.shaper.limit.unwrap_or(0) as u64)
+                .n("up_kbit", self.shaper.last_kbit as u64)
+                .n("up_queued", self.shaper.last_queued)
                 .n("up_since", t.up_since),
             None => Json::obj().b("up", false),
         };
