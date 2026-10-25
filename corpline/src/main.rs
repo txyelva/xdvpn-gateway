@@ -15,6 +15,7 @@ mod machine;
 mod net;
 mod oc;
 mod report;
+mod shaper;
 mod sys;
 
 use config::Config;
@@ -191,6 +192,9 @@ struct Daemon {
     cn_ips_mtime: Option<std::time::SystemTime>,
     cn_ips: usize,
     cn_ips_warned: bool,
+    /// 公司线路上行排队控制（见 shaper.rs）
+    shaper: shaper::Shaper,
+    shape_failed: bool,
 }
 
 fn run(conf: &Path) -> i32 {
@@ -337,6 +341,8 @@ fn run(conf: &Path) -> i32 {
         cn_ips_mtime: None,
         cn_ips: 0,
         cn_ips_warned: false,
+        shaper: shaper::Shaper::new(),
+        shape_failed: false,
     };
     d.load_cn_ips();
     let acts = d.m.start(sys::now_ms());
@@ -398,6 +404,7 @@ impl Daemon {
             }
             last_tick = now;
             self.check_oc();
+            self.shape(now);
             self.check_tunnel_file();
             let a = self.m.handle(Event::Tick, now);
             self.apply(a);
@@ -586,6 +593,7 @@ impl Daemon {
             self.tunnel = None;
             self.tunnel_mtime = None;
             self.counters = None;
+            self.shaper.reset_counters();
             self.push_dns_view();
             let a = self.m.handle(Event::OcExited { auth_failed: o.auth_failed, detail }, sys::now_ms());
             self.apply(a);
@@ -605,6 +613,11 @@ impl Daemon {
         match parse_tunnel(&p) {
             Some(t) => {
                 report::log(&format!("隧道就绪：{} 地址 {} MTU {} DNS {:?}", t.dev, t.ip, t.mtu, t.dns));
+                // 新网卡：沿用学到的上限（线路能力一般不会因重连而变）
+                self.shaper.reset_counters();
+                if let Some(l) = self.shaper.limit.filter(|_| self.cfg.up_shaper) {
+                    net::shape_set(&t.dev, l);
+                }
                 self.tunnel = Some(t);
                 self.push_dns_view();
                 let a = self.m.handle(Event::TunnelUp, sys::now_ms());
@@ -706,6 +719,40 @@ impl Daemon {
         }
     }
 
+    /// 每秒看一眼隧道上行有没有堵住（读两个 /proc 小文件），需要时调整限速
+    fn shape(&mut self, now: u64) {
+        if !self.cfg.up_shaper {
+            return;
+        }
+        let (Some(t), Some(o)) = (&self.tunnel, &self.oc) else { return };
+        let Some(tx) = sys::if_counter(&t.dev, "tx_bytes") else { return };
+        let mbit = |k: u32| format!("{:.1} Mbit/s", k as f64 / 1000.0);
+        match self.shaper.observe(now, tx, net::oc_sendq(o.pid)) {
+            Some(shaper::Change::Set(l, first)) => {
+                if !net::shape_set(&t.dev, l) {
+                    // 没装上就当没限：下次占满再试，也让"开始限速"的提醒在真正生效时才出现；失败只记一次
+                    self.shaper.limit = None;
+                    if !self.shape_failed {
+                        self.shape_failed = true;
+                        report::log("设置公司线路上传限速失败（tc 不可用？）");
+                    }
+                    return;
+                }
+                let (cap, lim) = (mbit(self.shaper.cap), mbit(l));
+                if first {
+                    self.tl.push(Level::Info, &format!("有设备在往公司线路大量上传，把线路占满了（实际约 {}）：已把上传限到 {}、各连接轮流发，其它连接不再被拖慢", cap, lim));
+                    self.dirty = true;
+                }
+                report::log(&format!("公司线路上传占满（实际约 {}），限到 {}", cap, lim));
+            }
+            None => {}
+            Some(shaper::Change::Off) => {
+                net::shape_off(&t.dev);
+                report::log("公司线路上传不再限速");
+            }
+        }
+    }
+
     fn refresh_bypass(&mut self) {
         let nets = net::bypass_nets(&self.cfg, &self.server_ips);
         if nets != self.bypass && net::set_bypass(&nets) {
@@ -780,6 +827,7 @@ impl Daemon {
                 .s("gateway", &t.gateway)
                 .s("domain", &t.domain)
                 .ob("dtls", oc.and_then(|o| o.dtls))
+                .n("up_limit_kbit", self.shaper.limit.unwrap_or(0) as u64)
                 .n("up_since", t.up_since),
             None => Json::obj().b("up", false),
         };

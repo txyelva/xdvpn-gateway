@@ -618,6 +618,55 @@ scenario_ct_mark() {
 	if [ $n -lt 70 ]; then ok "规则被清后 ${n} 秒内补回"; else bad "规则被清后没有补回"; fi
 }
 
+# 公司 VPN 只走 TLS 时，一台设备大量上传会把隧道堵住；限速 + 按连接轮流发以后，别的连接不该被拖慢
+scenario_upload_flood() {
+	CASE="大量上传占满公司线路"
+	fresh_active
+	dbset corpline_no_dtls=1
+	api 1
+	wait_state active 90 >/dev/null
+	check "只走 TLS（模拟公司服务器不给 DTLS）" "$(jq -r '.tunnel.dtls' $ST)" null
+	wan tc qdisc replace dev wan-corp root netem rate 5mbit delay 15ms limit 200
+	(wan nc -lk 100.64.2.80 9000 >/dev/null 2>&1 &)
+	sleep 1
+	local t0=$(lan1 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/)
+	lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 &
+	local u1=$!
+	lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 &
+	local u2=$!
+	local n=0 lim=0
+	while [ $n -lt 30 ]; do
+		lim=$(jq -r '.tunnel.up_limit_kbit // 0' $ST)
+		[ "$lim" -gt 0 ] 2>/dev/null && break
+		sleep 1
+		n=$((n + 1))
+	done
+	if [ "$lim" -ge 2500 ] && [ "$lim" -le 4800 ]; then ok "开始上传 ${n} 秒内限速（线路 5 Mbit/s，限到 ${lim} kbit/s）"; else bad "没有按线路能力限速：${lim} kbit/s（${n} 秒）"; fi
+	check "限速方式（htb + sfq）" "$(rt tc qdisc show dev corp0 | grep -cE 'htb|sfq')" 2
+	sleep 5
+	# 另一台走公司线路的设备（这里用同一台的新连接）：每次请求要过隧道 3 个来回
+	local i a=0 worst=0 v
+	for i in 1 2 3 4 5; do
+		v=$(lan1 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/ | awk '{printf "%d", $1 * 1000}')
+		[ "${v:-10000}" -gt "$worst" ] && worst=${v:-10000}
+		sleep 0.5
+	done
+	if [ "$worst" -le 600 ]; then ok "上传进行中其它连接的请求最慢 ${worst} ms（空闲时 $(echo $t0 | awk '{printf "%d", $1 * 1000}') ms；不限速时实测 3–10 秒）"; else bad "上传进行中其它连接仍然很慢：最慢 ${worst} ms"; fi
+	local b0=$(rt cat /sys/class/net/corp0/statistics/tx_bytes)
+	sleep 5
+	local kb=$(( ($(rt cat /sys/class/net/corp0/statistics/tx_bytes) - b0) * 8 / 5000 ))
+	if [ "$kb" -ge $((lim * 8 / 10)) ]; then ok "上传本身照常进行：${kb} kbit/s"; else bad "上传被压得太低：${kb} kbit/s（上限 $lim）"; fi
+	kill $u1 $u2 2>/dev/null
+	pkill -f "head -c 400M"
+	pkill -f "nc -lk 100.64.2.80 9000"
+	wait $u1 $u2 2>/dev/null
+	wan tc qdisc del dev wan-corp root 2>/dev/null
+	dbset corpline_no_dtls=0
+	api 1
+	wait_state active 90 >/dev/null
+	check "重新应用设置后不再限速" "$(rt tc qdisc show dev corp0 | grep -c htb)" 0
+}
+
 scenario_device_ports() {
 	CASE="设备走公司线路、个别端口直连"
 	fresh_active
@@ -847,7 +896,7 @@ JSON
 	wait_state active 60 >/dev/null
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild ct_mark cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild ct_mark upload_flood cn_direct cn_update direct_domain device_ports devices security resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

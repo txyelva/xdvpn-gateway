@@ -17,6 +17,8 @@ pub struct Config {
     pub servercert: String,
     pub oc_extra: Vec<String>,
     pub no_dtls: bool,
+    /// 公司线路上传被占满时自动限速、按连接轮流发（shaper.rs）
+    pub up_shaper: bool,
 
     pub lan_if: String,
     pub tun_if: String,
@@ -216,6 +218,7 @@ impl Config {
             servercert: s("servercert", ""),
             oc_extra: list(g("oc_extra")),
             no_dtls: flag(g("no_dtls"), false),
+            up_shaper: flag(g("up_shaper"), true),
 
             lan_if: s("lan_if", "br0"),
             tun_if: s("tun_if", "corp0"),

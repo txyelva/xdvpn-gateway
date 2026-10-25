@@ -674,6 +674,7 @@ pub fn cleanup(cfg: &Config) {
     drop_chain("iptables", "mangle", CH_MARK);
     drop_chain("iptables", "mangle", CH_NEW);
     drop_chain("iptables", "mangle", CH_FLOW);
+    shape_off(&cfg.tun_if);
     drop_chain("iptables", "mangle", CH_MSS);
     drop_chain("iptables", "nat", CH_NAT);
     drop_chain("iptables", "filter", CH_GUARD);
@@ -702,6 +703,58 @@ pub fn tun_up(dev: &str, addr: &str, mtu: &str, table: u32) -> bool {
     let _ = std::fs::write(format!("/proc/sys/net/ipv4/conf/{}/rp_filter", dev), "0");
     let c = run_ok("ip", &["route", "replace", "default", "dev", dev, "table", &t]);
     a && b && c
+}
+
+/// 隧道上行限速 + 按连接轮流发（htb 一个类，下面挂 sfq）；已经装好时只改速率。
+/// 华硕固件的 tc 对 tun 网卡做 `replace` 会报 Invalid argument（实际却装上了），所以只用 add / change，
+/// 装完再看一眼是否真的在。
+pub fn shape_set(dev: &str, kbit: u32) -> bool {
+    let rate = format!("{}kbit", kbit);
+    // 每次能连发 10 ms 的量（至少 15 KB），避免高速率下被定时器粒度卡住
+    let burst = format!("{}", (kbit as u64 * 1000 / 8 / 100).max(15_000));
+    let class = |op: &str| run_ok("tc", &["class", op, "dev", dev, "parent", "1:", "classid", "1:1", "htb", "rate", &rate, "ceil", &rate, "burst", &burst, "cburst", &burst]);
+    let installed = || {
+        let (_, out) = run("tc", &["qdisc", "show", "dev", dev]);
+        out.contains("qdisc htb 1:") && out.contains("qdisc sfq 10:")
+    };
+    if installed() && class("change") {
+        return true;
+    }
+    shape_off(dev);
+    let _ = run_ok("tc", &["qdisc", "add", "dev", dev, "root", "handle", "1:", "htb", "default", "1"])
+        && class("add")
+        && run_ok("tc", &["qdisc", "add", "dev", dev, "parent", "1:1", "handle", "10:", "sfq", "perturb", "10"]);
+    installed()
+}
+
+pub fn shape_off(dev: &str) {
+    run_ok("tc", &["qdisc", "del", "dev", dev, "root"]);
+}
+
+/// openconnect 到 VPN 服务器的 TCP 连接里还没发出去的字节（找不到、或走 DTLS/UDP 时返回 None）
+pub fn oc_sendq(pid: i32) -> Option<u64> {
+    let mut inodes = Vec::new();
+    for e in std::fs::read_dir(format!("/proc/{}/fd", pid)).ok()?.flatten() {
+        if let Ok(l) = std::fs::read_link(e.path()) {
+            let l = l.to_string_lossy();
+            if let Some(n) = l.strip_prefix("socket:[").and_then(|x| x.strip_suffix(']')) {
+                inodes.push(n.to_string());
+            }
+        }
+    }
+    let mut best = None;
+    for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let Ok(s) = std::fs::read_to_string(f) else { continue };
+        for l in s.lines().skip(1) {
+            let v: Vec<&str> = l.split_whitespace().collect();
+            if v.len() < 10 || v[3] != "01" || !inodes.iter().any(|i| i == v[9]) {
+                continue;
+            }
+            let q = v[4].split(':').next().and_then(|x| u64::from_str_radix(x, 16).ok()).unwrap_or(0);
+            best = Some(best.map_or(q, |b: u64| b.max(q)));
+        }
+    }
+    best
 }
 
 pub fn dnsmasq_conf(cfg: &Config) -> String {
