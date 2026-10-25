@@ -8,6 +8,8 @@
     s=active|watching|fallback|autherr|paused|connecting|off|setup|stale   切换状态并重置设置
     open=r-account,r-devices,r-global,r-notify,r-adv                     预先展开设置行
     log=1                                                                预先展开运行日志
+    click=元素id或CSS选择器|…                                             加载后依次点击（等元素出现且可点）
+    js=脚本                                                              加载 2.5 秒后执行，结果写到 <html data-js>（配合 --dump-dom）
     noclients=1                                                          模拟读不到在线设备列表
     /_temp/corpline_domains.json                                         最近访问的网站（fixtures/domains.json；插件没运行时 404）
     net=login|down                                                       模拟登录过期（状态和 dbus 回登录页）/ 路由器连不上（503）
@@ -264,8 +266,11 @@ class H(BaseHTTPRequestHandler):
                 if rid:
                     hooks.append("CL.openRow(%s,true,true);" % json.dumps(rid))
             if "click" in q:
-                # 交互验证：页面加载后点一下指定按钮
-                hooks.append("window.addEventListener('load',function(){setTimeout(function(){document.getElementById(%s).click();},400);});" % json.dumps(q["click"][0]))
+                # 交互验证：页面加载后依次点指定按钮（元素 id 或 CSS 选择器，| 分隔）
+                hooks.append("window.addEventListener('load',function(){var a=%s.split('|'),i=0,t=0;(function n(){if(i>=a.length)return;var s=a[i],e=document.getElementById(s)||document.querySelector(s);if(e&&!e.disabled){i++;t=0;e.click();setTimeout(n,300);}else if(++t<40)setTimeout(n,200);})();});" % json.dumps(q["click"][0]))
+            if "js" in q:
+                # 交互验证：页面加载 2.5 秒后执行一段脚本，返回值或异常写到 <html data-js>，用 --dump-dom 读
+                hooks.append("window.addEventListener('load',function(){setTimeout(function(){var r;try{r=String(eval(%s));}catch(x){r='ERR '+x;}document.documentElement.setAttribute('data-js',r);},2500);});" % json.dumps(q["js"][0]))
             if q.get("log", ["0"])[0] == "1":
                 hooks.append("window.addEventListener('load',function(){setTimeout(function(){document.getElementById('clLogBtn').click();},50);});")
             if hooks:

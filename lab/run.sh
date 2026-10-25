@@ -561,7 +561,33 @@ scenario_direct_domain() {
 	wait_state active 60 >/dev/null
 }
 
-ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain resources nasty upgrade bootloop disable_uninstall"
+scenario_device_ports() {
+	CASE="设备走公司线路、个别端口直连"
+	fresh_active
+	# 上一轮用过的本机端口还在 TIME-WAIT 时 curl 绑不上，先等它们过期
+	for i in $(seq 70); do
+		[ -z "$(lan1 ss -Htan state time-wait '( sport >= :3981 and sport <= :3991 )')" ] && break
+		sleep 1
+	done
+	local keep=$(/koolshare/bin/dbus get corpline_devices)
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t1\n02:00:00:00:01:00\tNAS\t0\tcorp\t3981, 3982-3990,0,x\n' | base64 -w0)
+	api 1
+	wait_state active 60 >/dev/null
+	check "配置里的端口例外（不合法的丢掉）" "$(grep '^direct_ports=' /var/run/corpline/corpline.conf)" "direct_ports=02:00:00:00:01:00@3981,02:00:00:00:01:00@3982-3990,"
+	check "这台设备不在整台直连名单里" "$(grep -c '02:00:00:00:01:00' <(grep '^direct_macs=' /var/run/corpline/corpline.conf))" 0
+	check "普通连接走公司线路" "$(path lan1 100.64.2.80)" tunnel
+	check "从端口 3985 发出的连接" "$(lan1 curl -s -m4 --local-port 3985 http://100.64.2.80/ | awk '{print $2}')" 100.64.0.2
+	check "从端口 3981 发出的连接" "$(lan1 curl -s -m4 --local-port 3981 http://100.64.2.80/ | awk '{print $2}')" 100.64.0.2
+	check "从端口 3991 发出的连接（不在范围内）" "$(lan1 curl -s -m4 --local-port 3991 http://100.64.2.80/ | awk '{print $2}')" 100.64.1.10
+	check "UDP 也有对应规则" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -c -- '-p udp .*--sport 398[12]')" 2
+	check "另一台设备不受影响" "$(path lan2 100.64.2.80)" direct
+	dbset corpline_devices=$keep
+	api 1
+	wait_state active 60 >/dev/null
+	check "取消后从端口 3987 发出的连接" "$(lan1 curl -s -m4 --local-port 3987 http://100.64.2.80/ | awk '{print $2}')" 100.64.1.10
+}
+
+ALL="install enable company_dns_down blackhole kill_oc freeze_oc latency wan_flap wan_repeat server_down crash crash_loop power_loss notify auth fw_rebuild cn_direct cn_update direct_domain device_ports resources nasty upgrade bootloop disable_uninstall"
 LIST=${*:-$ALL}
 {
 	echo "# 公司专线 沙盒演练结果"

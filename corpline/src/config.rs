@@ -25,6 +25,8 @@ pub struct Config {
     pub rule_pref: u32,
     pub bypass_nets: Vec<String>,
     pub direct_macs: Vec<String>,
+    /// 走公司线路的设备里，从这些本机端口发出的连接直连：(MAC, 起, 止)
+    pub direct_ports: Vec<(String, u16, u16)>,
 
     pub overseas_domains: Vec<String>,
     /// 用户单独设为直连的网站（解析走运营商 DNS，连接不进隧道）
@@ -66,6 +68,27 @@ fn list(v: Option<&String>) -> Vec<String> {
 
 fn ips(v: Option<&String>) -> Vec<Ipv4Addr> {
     list(v).iter().filter_map(|s| s.parse().ok()).collect()
+}
+
+fn is_mac(s: &str) -> bool {
+    let p: Vec<&str> = s.split(':').collect();
+    p.len() == 6 && p.iter().all(|x| x.len() == 2 && x.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// "MAC@端口" 或 "MAC@起-止"，逗号分隔；格式不对的条目丢掉
+fn port_rules(v: Option<&String>) -> Vec<(String, u16, u16)> {
+    list(v)
+        .iter()
+        .filter_map(|e| {
+            let (mac, p) = e.split_once('@')?;
+            if !is_mac(mac) {
+                return None;
+            }
+            let (a, b) = p.split_once('-').unwrap_or((p, p));
+            let (a, b): (u16, u16) = (a.parse().ok()?, b.parse().ok()?);
+            (a >= 1 && a <= b).then(|| (mac.to_ascii_uppercase(), a, b))
+        })
+        .collect()
 }
 
 fn flag(v: Option<&String>, default: bool) -> bool {
@@ -147,6 +170,7 @@ impl Config {
             rule_pref: num(g("rule_pref"), 8850),
             bypass_nets: list(g("bypass_nets")),
             direct_macs: list(g("direct_macs")).iter().map(|x| x.to_ascii_uppercase()).collect(),
+            direct_ports: port_rules(g("direct_ports")),
 
             overseas_domains,
             direct_domains: list(g("direct_domains")).iter().map(|d| norm_domain(d)).collect(),
@@ -254,5 +278,14 @@ mod tests {
         assert_eq!(c.overseas_domains, vec!["apple.com", "sony.com"]);
         assert_eq!(c.direct_macs, vec!["AA:BB:CC:DD:EE:FF"]);
         assert_eq!(c.mark, 0x8000);
+    }
+
+    #[test]
+    fn port_exceptions() {
+        let mut m = base();
+        m.insert("direct_ports".into(), "aa:bb:cc:dd:ee:ff@32400,AA:BB:CC:DD:EE:FF@3982-4081,x@1,AA:BB:CC:DD:EE:FF@0,AA:BB:CC:DD:EE:FF@9-3,AA:BB:CC:DD:EE:FF@70000".into());
+        let c = Config::from_map(&m).unwrap();
+        let mac = "AA:BB:CC:DD:EE:FF".to_string();
+        assert_eq!(c.direct_ports, vec![(mac.clone(), 32400, 32400), (mac, 3982, 4081)]);
     }
 }

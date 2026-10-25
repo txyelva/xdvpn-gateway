@@ -126,6 +126,12 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
         for mac in &cfg.direct_macs {
             r.push_str(&format!("-A {} -m mac --mac-source {} -j RETURN\n", CH_NEW, mac));
         }
+        // 设备走公司线路、个别本机端口直连（例如 NAS 上 BT 的收发端口），TCP 和 UDP 都算
+        for (mac, a, b) in &cfg.direct_ports {
+            for proto in ["tcp", "udp"] {
+                r.push_str(&format!("-A {} -m mac --mac-source {} -p {} --sport {}:{} -j RETURN\n", CH_NEW, mac, proto, a, b));
+            }
+        }
         r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CN));
         r.push_str(&format!("-A {} -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_LIVE, m));
         r.push_str(&format!("-A {} -m state --state NEW -j {}\n", CH_MARK, CH_NEW));

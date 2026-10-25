@@ -176,6 +176,16 @@
 .cl .cl-dev.off b{color:var(--t2)}
 .cl .cl-dev .cl-seg{flex:none}
 .cl .cl-dev-r{display:flex;align-items:center;gap:16px;flex:none}
+.cl .cl-dev .cl-dev-p{color:var(--t2)}
+/* 「直连端口」入口只在指到这一行或键盘移到这一行时出现，一列看下来不重复；已填端口的行一直显示「修改端口」 */
+.cl .cl-dev .cl-lnk.pe{opacity:0;transition:opacity var(--d-fast) var(--ease),color var(--d-fast) var(--ease)}
+.cl .cl-dev:hover .cl-lnk.pe,.cl .cl-dev:focus-within .cl-lnk.pe,.cl .cl-dev .cl-lnk.pe[aria-expanded="true"]{opacity:1}
+@media (hover:none){.cl .cl-dev .cl-lnk.pe{opacity:1}}
+/* 直连端口编辑：在设备行下面展开，占满整行 */
+.cl .cl-pe{grid-column:1 / -1;padding:2px 0 2px}
+.cl .cl-pe-in{display:flex;gap:8px;max-width:520px}
+.cl .cl-pe-in .cl-in{flex:1;min-width:0}
+.cl .cl-pe .cl-hint{margin-top:8px;max-width:560px}
 .cl .cl-dname{display:block;max-width:100%;background:none;border:0;padding:6px 0;margin:-6px 0;color:var(--t1);font-size:13px;line-height:20px;font-weight:500;text-align:left;cursor:pointer;overflow-wrap:anywhere;word-break:break-all;border-radius:4px}
 .cl .cl-dname:hover{text-decoration:underline;text-underline-offset:3px}
 .cl .cl-tag{display:inline-block;vertical-align:top;margin:1px 0 0 8px;padding:0 6px;border:1px solid var(--line);border-radius:4px;font-style:normal;font-size:12px;line-height:14px;color:var(--t2)}
@@ -347,7 +357,8 @@ var CL = (function () {
 		var out = [], lines = b64d(s).split(/\r?\n/), i, p;
 		for (i = 0; i < lines.length; i++) {
 			p = lines[i].split('\t');
-			if (/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(p[0] || '')) out.push({ mac: p[0].toUpperCase(), name: p[1] || '', locked: p[2] === '1' });
+			if (/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(p[0] || ''))
+				out.push({ mac: p[0].toUpperCase(), name: p[1] || '', locked: p[2] === '1', route: p[3] === 'corp' && p[2] !== '1' ? 'corp' : 'direct', ports: p[4] || '' });
 		}
 		return dedupe(out);
 	}
@@ -360,21 +371,42 @@ var CL = (function () {
 				var o = out[seen[k]];
 				if (d.locked) o.locked = true;
 				if (!o.name || o.name === LOCK_NAME) o.name = d.name && d.name !== LOCK_NAME ? d.name : o.name;
+				if (!o.ports) o.ports = d.ports || '';
 				continue;
 			}
 			seen[k] = out.length;
-			out.push({ mac: k, name: d.name || '', locked: !!d.locked });
+			out.push({ mac: k, name: d.name || '', locked: !!d.locked, route: d.locked ? 'direct' : d.route || 'direct', ports: d.ports || '' });
 		}
 		// 锁定的管理电脑排在最前
 		out.sort(function (a, b) { return (b.locked ? 1 : 0) - (a.locked ? 1 : 0); });
 		return out;
 	}
 	function encodeDevices(list) {
-		var lines = [], i;
+		var lines = [], i, d;
 		list = dedupe(list);
-		for (i = 0; i < list.length; i++) lines.push(list[i].mac + '\t' + String(list[i].name || '').replace(/[\t\r\n]/g, ' ') + '\t' + (list[i].locked ? '1' : '0'));
+		for (i = 0; i < list.length; i++) {
+			d = list[i];
+			// 整台直连、没填端口的设备仍写老的三列格式，旧版本也能读
+			lines.push(d.mac + '\t' + String(d.name || '').replace(/[\t\r\n]/g, ' ') + '\t' + (d.locked ? '1' : '0') +
+				(d.route === 'corp' || d.ports ? '\t' + (d.route === 'corp' ? 'corp' : 'direct') + '\t' + d.ports : ''));
+		}
 		return lines.length ? b64e(lines.join('\n')) : '';
 	}
+	// "32400, 3981 3982-4081" → "32400,3981,3982-4081"；格式不对返回 null
+	function normPorts(s) {
+		var t = String(s || '').replace(/[，、；;]/g, ',').replace(/\s*[-–~]\s*/g, '-').split(/[,\s]+/), out = [], seen = {}, i, m, a, b, k;
+		for (i = 0; i < t.length; i++) {
+			if (!t[i]) continue;
+			m = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(t[i]);
+			if (!m) return null;
+			a = +m[1]; b = m[2] ? +m[2] : a;
+			if (a < 1 || b > 65535 || a > b) return null;
+			k = a === b ? String(a) : a + '-' + b;
+			if (!seen[k]) { seen[k] = 1; out.push(k); }
+		}
+		return out.length > 20 ? null : out.join(',');
+	}
+	function portsText(p) { return String(p || '').split(',').join('、').replace(/-/g, '–'); }
 	function loadClients() {
 		getJSON('/appGet.cgi?hook=get_clientlist()', function (code, o) {
 			var src = o && (o.get_clientlist || o), k, c, map = {}, n = 0;
@@ -594,8 +626,13 @@ var CL = (function () {
 		try { return x.localeCompare(y, 'zh-Hans-CN'); } catch (e) { return x < y ? -1 : x > y ? 1 : 0; }
 	}
 	function devRows() {
-		var list = devList(), saved = parseDevices(db.corpline_devices), direct = {}, seen = {}, pinned = [], online = [], offline = [], i, k, d, c;
-		for (i = 0; i < list.length; i++) direct[list[i].mac] = list[i];
+		var list = devList(), saved = parseDevices(db.corpline_devices), rule = {}, seen = {}, pinned = [], online = [], offline = [], i, k, d, c, nd = 0, np = 0;
+		for (i = 0; i < list.length; i++) {
+			rule[list[i].mac] = list[i];
+			if (list[i].route === 'corp') { if (list[i].ports) np++; } else nd++;
+		}
+		function isDirect(m) { return !!rule[m] && rule[m].route !== 'corp'; }
+		function portsOf(m) { return rule[m] && rule[m].route === 'corp' ? rule[m].ports : ''; }
 		// 管理电脑：已锁定的那行；还没开启过就用登录后台的这台电脑占位，开启时自动加入
 		for (i = 0; i < list.length; i++) if (list[i].locked) {
 			c = clients && clients[list[i].mac];
@@ -608,7 +645,7 @@ var CL = (function () {
 			if (me) seen[me.mac] = 1;
 		}
 		if (clients) for (k in clients) if (clients.hasOwnProperty(k) && clients[k].online && !seen[k]) {
-			online.push({ mac: k, name: devName(direct[k], clients[k]), ip: clients[k].ip, online: true, direct: !!direct[k] });
+			online.push({ mac: k, name: devName(rule[k], clients[k]), ip: clients[k].ip, online: true, direct: isDirect(k), ports: portsOf(k) });
 			seen[k] = 1;
 		}
 		// 不在线但在直连名单里的设备（含刚切回公司线路、还没保存的），规则不能丢
@@ -616,11 +653,11 @@ var CL = (function () {
 		for (i = 0; i < cand.length; i++) {
 			d = cand[i]; if (seen[d.mac] || d.locked) continue;
 			c = clients && clients[d.mac];
-			offline.push({ mac: d.mac, name: devName(direct[d.mac] || d, c), ip: c && c.ip || '', online: false, unknown: !clients, direct: !!direct[d.mac] });
+			offline.push({ mac: d.mac, name: devName(rule[d.mac] || d, c), ip: c && c.ip || '', online: false, unknown: !clients, direct: isDirect(d.mac), ports: portsOf(d.mac) });
 			seen[d.mac] = 1;
 		}
 		online.sort(byName); offline.sort(byName);
-		return { rows: pinned.concat(online, offline), online: online.length + (pinned.length && pinned[0].online && clients && pinned[0].ip ? 1 : 0), direct: list.length + (pinned.length && pinned[0].later ? 1 : 0) };
+		return { rows: pinned.concat(online, offline), online: online.length + (pinned.length && pinned[0].online && clients && pinned[0].ip ? 1 : 0), direct: nd + (pinned.length && pinned[0].later ? 1 : 0), partial: np };
 	}
 	function seg(label, cur, opts, attr) {
 		var h = '<div class="cl-seg q" role="radiogroup" aria-label="' + esc(label) + '">', i;
@@ -640,15 +677,33 @@ var CL = (function () {
 				h += '<div class="cl-dev"><div><b>' + esc(d.name) + '</b><span class="cl-num">' + esc(sub) + '</span><span>' +
 					(d.later ? '管理这台路由器的电脑，开启时自动加入直连，保证随时能打开后台' : '管理这台路由器的电脑，保证随时能打开后台') + '</span></div>' + right + '</div>';
 			} else {
-				right = seg((d.name || d.mac) + ' 走哪条线', d.direct ? 'direct' : 'corp', [['corp', '公司线路'], ['direct', '直连']], ' data-mac="' + d.mac + '"');
-				h += '<div class="cl-dev' + (d.online ? '' : ' off') + '"><div><b>' + esc(d.name || '未命名设备') + '</b><span class="cl-num">' + esc(sub) + '</span></div>' + right + '</div>';
+				var open = portsOpen === d.mac && !d.direct;
+				right = '<div class="cl-dev-r">' + (d.direct ? '' : '<button type="button" class="cl-lnk' + (d.ports ? '' : ' pe') + '" data-pmac="' + d.mac + '" aria-expanded="' + open + '">' + (d.ports ? '修改端口' : '直连端口') + '</button>') +
+					seg((d.name || d.mac) + ' 走哪条线', d.direct ? 'direct' : 'corp', [['corp', '公司线路'], ['direct', '直连']], ' data-mac="' + d.mac + '"') + '</div>';
+				h += '<div class="cl-dev' + (d.online ? '' : ' off') + '"><div><b>' + esc(d.name || '未命名设备') + '</b><span class="cl-num">' + esc(sub) + '</span>' +
+					(d.ports ? '<span class="cl-num cl-dev-p">' + esc(portsText(d.ports)) + ' 端口直连，其余走公司线路</span>' : '') + '</div>' + right +
+					(open ? '<div class="cl-pe"><div class="cl-pe-in"><input class="cl-in cl-num" id="clDevPorts" value="' + esc(portsText(d.ports).replace(/、/g, ', ').replace(/–/g, '-')) +
+						'" placeholder="例如 32400, 3981, 3982-4081" aria-label="' + esc((d.name || d.mac) + ' 直连的端口') + '" spellcheck="false" data-pmac="' + d.mac + '">' +
+						'<button type="button" class="cl-btn sec" id="clDevPortsOk" data-pmac="' + d.mac + '">完成</button></div>' +
+						'<p class="cl-hint">填这台设备上程序用的端口，用逗号隔开，可以写一段（3982-4081）。从这些端口发出的连接直连，其余仍走公司线路。清空后点完成即取消。</p></div>' : '') + '</div>';
 			}
 		}
 		if (!h) h = '<div class="cl-dev empty">读不到在线设备。家里的设备默认都走公司线路。</div>';
 		$i('clDevList').innerHTML = h;
-		setVal('clDevVal', (clients ? r.online + ' 台在线 · ' : '') + r.direct + ' 台直连');
+		setVal('clDevVal', (clients ? r.online + ' 台在线 · ' : '') + r.direct + ' 台直连' + (r.partial ? ' · ' + r.partial + ' 台部分端口直连' : ''));
 		var btns = $i('clDevList').querySelectorAll('button[data-mac]');
 		for (i = 0; i < btns.length; i++) btns[i].onclick = setDeviceRoute;
+		btns = $i('clDevList').querySelectorAll('.cl-lnk[data-pmac]');
+		for (i = 0; i < btns.length; i++) btns[i].onclick = togglePorts;
+		var pin = $i('clDevPorts');
+		if (pin) {
+			$i('clDevPortsOk').onclick = savePorts;
+			pin.onkeydown = function (e) {
+				var k = (e || window.event).keyCode;
+				if (k === 13) savePorts();
+				else if (k === 27) { portsOpen = ''; msg('devices', ''); renderDevices(); focusPortsLink(this.getAttribute('data-pmac')); }
+			};
+		}
 		// 不在线的设备手动填 MAC；读不到在线设备时直接展开
 		var manual = clientsFailed || devManual;
 		$i('clDevManual').hidden = !manual;
@@ -657,16 +712,41 @@ var CL = (function () {
 		$i('clDevNote').textContent = (clientsFailed ? '读不到路由器的在线设备列表，请手动填写。' : '') + 'MAC 地址形如 AA:BB:CC:DD:EE:FF，可以在「网络地图 › 客户端」里找到。';
 		setPend('devices', !!edit.devices && encodeDevices(edit.devices) !== (db.corpline_devices || ''));
 	}
-	var devManual = false;
-	function setDeviceRoute() {
-		var mac = this.getAttribute('data-mac'), want = this.getAttribute('data-v'), list = devList().slice(), out = [], i, has = false, c = clients && clients[mac];
-		for (i = 0; i < list.length; i++) { if (list[i].mac === mac) { has = true; if (want === 'direct') out.push(list[i]); } else out.push(list[i]); }
-		if (want === 'direct' && !has) {
+	var devManual = false, portsOpen = '';
+	// 改一台设备的规则（线路或直连端口）；走公司线路又没填端口的设备不用记
+	function setDevRule(mac, route, ports) {
+		var list = devList(), out = [], i, d = null, c = clients && clients[mac];
+		for (i = 0; i < list.length; i++) if (list[i].mac === mac) d = list[i]; else out.push(list[i]);
+		if (!d) {
 			var keep = parseDevices(db.corpline_devices), nm = c && c.name || '';
 			for (i = 0; i < keep.length; i++) if (keep[i].mac === mac && keep[i].name) nm = keep[i].name;
-			out.push({ mac: mac, name: nm, locked: false });
+			d = { mac: mac, name: nm, locked: false, route: 'corp', ports: '' };
 		}
-		edit.devices = out; msg('devices', ''); renderDevices();
+		d = { mac: d.mac, name: d.name, locked: d.locked, route: route || d.route, ports: ports === undefined ? d.ports : ports };
+		if (d.route === 'direct' || d.ports) out.push(d);
+		edit.devices = out;
+	}
+	function focusPortsLink(mac) {
+		var el = $i('clDevList').querySelector('.cl-lnk[data-pmac="' + mac + '"]');
+		if (el) try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+	}
+	function togglePorts() {
+		var mac = this.getAttribute('data-pmac');
+		portsOpen = portsOpen === mac ? '' : mac; msg('devices', ''); renderDevices();
+		if (portsOpen) { var el = $i('clDevPorts'); if (el) { el.focus(); el.setSelectionRange && el.setSelectionRange(el.value.length, el.value.length); } }
+		else focusPortsLink(mac);
+	}
+	function savePorts() {
+		var el = $i('clDevPorts'), mac = el.getAttribute('data-pmac'), p = normPorts(el.value);
+		if (p === null) { bad('clDevPorts', 'devices', '端口要写成 1–65535 之间的数字，一段写成 3982-4081，最多 20 项。'); return; }
+		setDevRule(mac, null, p);
+		portsOpen = ''; msg('devices', ''); renderDevices(); focusPortsLink(mac);
+	}
+	function setDeviceRoute() {
+		var mac = this.getAttribute('data-mac'), want = this.getAttribute('data-v');
+		if (want === 'direct' && portsOpen === mac) portsOpen = '';
+		setDevRule(mac, want);
+		msg('devices', ''); renderDevices();
 		var again = $i('clDevList').querySelector('button[data-mac="' + mac + '"][data-v="' + want + '"]');
 		if (again) try { again.focus({ preventScroll: true }); } catch (e) { again.focus(); }
 	}
@@ -676,10 +756,11 @@ var CL = (function () {
 		if (/^[0-9A-F]{12}$/.test(mac)) mac = mac.replace(/(..)(?!$)/g, '$1:');
 		name = trim($i('clDevName').value);
 		if (!/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)) { bad('clDevMac', 'devices', 'MAC 地址的格式不对。'); return; }
-		for (i = 0; i < list.length; i++) if (list[i].mac === mac) { bad('clDevMac', 'devices', '这台设备已经设成直连了。'); return; }
+		for (i = 0; i < list.length; i++) if (list[i].mac === mac && list[i].route !== 'corp') { bad('clDevMac', 'devices', '这台设备已经设成直连了。'); return; }
 		if (clients && clients[mac] && clients[mac].online && !name) name = clients[mac].name;
-		list.push({ mac: mac, name: name, locked: false });
-		edit.devices = list; msg('devices', '');
+		setDevRule(mac, 'direct');
+		if (name) for (list = devList(), i = 0; i < list.length; i++) if (list[i].mac === mac) list[i].name = name;
+		msg('devices', '');
 		$i('clDevMac').value = ''; $i('clDevName').value = '';
 		renderDevices();
 	}
@@ -974,7 +1055,7 @@ var CL = (function () {
 		for (i = 0; i < list.length; i++) if (list[i].locked) return over;
 		var me = clientByIp(ADMIN_IP);
 		if (!me) return over;
-		over.corpline_devices = encodeDevices([{ mac: me.mac, name: me.name, locked: true }].concat(list));
+		over.corpline_devices = encodeDevices([{ mac: me.mac, name: me.name, locked: true, route: 'direct', ports: '' }].concat(list));
 		return over;
 	}
 	function onMaster() {
@@ -1077,7 +1158,7 @@ var CL = (function () {
 	function undoRow(which) {
 		edit[which] = which === 'account' ? false : null;
 		msg(which, '');
-		if (which === 'devices') { $i('clDevMac').value = ''; $i('clDevName').value = ''; }
+		if (which === 'devices') { $i('clDevMac').value = ''; $i('clDevName').value = ''; portsOpen = ''; }
 		if (which === 'domains') $i('clDomIn').value = '';
 		renderSettings();
 	}

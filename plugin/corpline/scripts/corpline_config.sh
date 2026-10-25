@@ -154,10 +154,24 @@ save_admin_device() {
 	dbus remove corpline_admin_ip
 }
 
-# 直连设备：dbus 里是 base64 的多行 "MAC<TAB>名字<TAB>锁定"，只取 MAC
+# 设备名单：dbus 里是 base64 的多行 "MAC<TAB>名字<TAB>锁定[<TAB>线路<TAB>直连端口]"。
+# 只有三列的老格式 = 整台直连；线路为 corp 的设备走公司线路，只有列出的本机端口直连。
 direct_macs() {
 	[ -z "$corpline_devices" ] && return
-	b64d "$corpline_devices" | awk -F'\t' '$1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ {printf "%s,", toupper($1)}'
+	b64d "$corpline_devices" | awk -F'\t' '$1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ && $4 != "corp" {printf "%s,", toupper($1)}'
+}
+
+# 端口例外：MAC@端口 或 MAC@起-止，逗号分隔；不合法的端口丢掉
+direct_ports() {
+	[ -z "$corpline_devices" ] && return
+	b64d "$corpline_devices" | awk -F'\t' '$1 ~ /^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/ && $4 == "corp" {
+		n = split($5, p, /[ ,]+/)
+		for (i = 1; i <= n; i++) {
+			if (p[i] !~ /^[0-9]+(-[0-9]+)?$/) continue
+			split(p[i], r, "-"); a = r[1] + 0; b = (r[2] == "" ? a : r[2] + 0)
+			if (a >= 1 && a <= b && b <= 65535) printf "%s@%s,", toupper($1), (a == b ? a : a "-" b)
+		}
+	}'
 }
 
 # 配置文件一行：值里的换行去掉，防止一个设置项"多写出"别的配置行
@@ -193,6 +207,7 @@ gen_conf() {
 			[ "$corpline_no_dtls" = "1" ] && echo "no_dtls=1"
 			kv lan_if "${corpline_lan_if:-br0}"
 			kv direct_macs "$(direct_macs)"
+			kv direct_ports "$(direct_ports)"
 			# 安装时已写入默认 apple.com,mzstatic.com；用户清空后这里就是空，不再回到默认
 			kv overseas_domains "$corpline_overseas_domains"
 			# 网页「网站单独设置」里设为直连的网站
