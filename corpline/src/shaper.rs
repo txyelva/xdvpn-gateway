@@ -6,8 +6,10 @@
 //! sfq 让各连接轮流发：视频会议、网页这些小流量就不再被一个大上传拖慢。
 //!
 //! 线路能力靠观察得出，不做测速：那条 TLS 连接里待发的数据持续积压，就说明线路满了，此时隧道实际
-//! 发出的速率就是线路能力，限到它的 80%。之后有人贴着上限传、又不积压，就每隔一段时间放宽 10%，
-//! 线路变快了也能跟上。没人大量上传时不限速、不改任何东西。
+//! 发出的速率就是线路能力，限到它的 80%。之后有人贴着上限传、又不积压，就很快往上放（每 10 秒 10%），
+//! 直到开始积压为止 —— 只有一台设备在传时也能用到接近线路的全部
+//! 能力，不会因为一次测低了就一直卡着。没人上传满 30 分钟就撤掉限速，下次占满时重新测。
+//! 没人大量上传时不限速、不改任何东西。
 
 use std::collections::VecDeque;
 
@@ -22,6 +24,8 @@ const FULL_MS: u64 = 150;
 const FULL_SECS: u32 = 3;
 /// 调整后至少 10 秒内不再调
 const HOLD_MS: u64 = 10_000;
+/// 没人往公司线路上传满这么久（秒）就撤掉限速
+const IDLE_OFF_SECS: u32 = 1800;
 
 #[derive(Debug, PartialEq)]
 pub enum Change {
@@ -39,12 +43,13 @@ pub struct Shaper {
     rates: VecDeque<u32>,
     full: u32,
     calm: u32,
+    idle: u32,
     hold_until: u64,
 }
 
 impl Shaper {
     pub fn new() -> Self {
-        Shaper { limit: None, cap: 0, last: None, rates: VecDeque::new(), full: 0, calm: 0, hold_until: 0 }
+        Shaper { limit: None, cap: 0, last: None, rates: VecDeque::new(), full: 0, calm: 0, idle: 0, hold_until: 0 }
     }
 
     /// 隧道重建（网卡计数从头开始）后调用
@@ -77,20 +82,31 @@ impl Shaper {
             self.hold_until = now + HOLD_MS;
             self.cap = avg;
             let first = self.limit.is_none();
-            let l = (avg / 10 * 8).max(MIN_KBIT);
+            // 第一次限到八成；已经在限、往上放宽时又占满了，说明刚好碰到线路能力，退回九成就够
+            let l = (avg / 10 * if first { 8 } else { 9 }).max(MIN_KBIT);
             self.limit = Some(l);
             return Some(Change::Set(l, first));
         }
         let l = self.limit?;
+        if avg as u64 * 10 < l as u64 {
+            self.idle += 1;
+            if self.idle >= IDLE_OFF_SECS {
+                self.idle = 0;
+                self.calm = 0;
+                self.limit = None;
+                return Some(Change::Off);
+            }
+        } else {
+            self.idle = 0;
+        }
+        // 贴着上限跑、又没开始积压：说明还能再快。积压一点（≥16 KB）就停在这里不再往上
         if avg as u64 * 100 >= l as u64 * 85 && q < 16 * 1024 {
             self.calm += 1;
         } else if (avg as u64) * 2 < l as u64 {
             self.calm = 0;
         }
-        // 离上次占满时的速率还远就快些放宽（30 秒），接近了就慢慢试（5 分钟）
         let next = l as u64 * 11 / 10;
-        let need = if next < self.cap as u64 * 9 / 10 { 30 } else { 300 };
-        if self.calm >= need && now >= self.hold_until {
+        if self.calm >= 10 && now >= self.hold_until {
             self.calm = 0;
             if next > MAX_KBIT as u64 {
                 self.limit = None;
@@ -137,9 +153,9 @@ mod tests {
         assert_eq!(feed(&mut s, &mut t, &mut tx, 5000, Some(2_000_000), 2), None);
         assert_eq!(feed(&mut s, &mut t, &mut tx, 5000, Some(2_000_000), 1), Some(Change::Set(4000, true)));
         assert_eq!(s.cap, 5000);
-        // 限速后仍积压（线路又变慢了）：10 秒内不再调，之后按新速率再降
+        // 限速后仍积压（线路又变慢了）：10 秒内不再调，之后按新速率的九成再降
         assert_eq!(feed(&mut s, &mut t, &mut tx, 3000, Some(2_000_000), 9), None);
-        assert_eq!(feed(&mut s, &mut t, &mut tx, 3000, Some(2_000_000), 3), Some(Change::Set(2400, false)));
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 3000, Some(2_000_000), 3), Some(Change::Set(2700, false)));
     }
 
     #[test]
@@ -154,15 +170,45 @@ mod tests {
         let (mut s, mut t, mut tx) = (Shaper::new(), 0, 0);
         feed(&mut s, &mut t, &mut tx, 10_000, Some(0), 1);
         assert_eq!(feed(&mut s, &mut t, &mut tx, 10_000, Some(3_000_000), 3), Some(Change::Set(8000, true)));
-        // 贴着 8000 跑、不积压：30 秒后放宽到 8800（离 10000 的九成还远）
-        assert_eq!(feed(&mut s, &mut t, &mut tx, 8000, Some(0), 29), None);
+        // 只有一台设备贴着 8000 跑、不积压：10 秒后放宽到 8800
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 8000, Some(0), 9), None);
         assert_eq!(feed(&mut s, &mut t, &mut tx, 8000, Some(0), 1), Some(Change::Set(8800, false)));
-        // 再往上就接近上次占满的速率了：要 5 分钟
-        assert_eq!(feed(&mut s, &mut t, &mut tx, 8800, Some(0), 299), None);
+        // 继续每 10 秒放宽一次
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 8800, Some(0), 9), None);
         assert_eq!(feed(&mut s, &mut t, &mut tx, 8800, Some(0), 1), Some(Change::Set(9680, false)));
-        // 没人用时不放宽，也不撤
-        assert_eq!(feed(&mut s, &mut t, &mut tx, 0, Some(0), 1000), None);
+        // 开始积压一点就停住，不再往上
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 9680, Some(32 * 1024), 120), None);
         assert_eq!(s.limit, Some(9680));
+    }
+
+    #[test]
+    fn a_low_estimate_recovers_quickly() {
+        // 某次只测到 2000（线路其实快得多）：一台设备单独传，一分钟后到 2800 左右，再过几分钟到 3000 以上（直到积压为止）
+        let (mut s, mut t, mut tx) = (Shaper::new(), 0, 0);
+        feed(&mut s, &mut t, &mut tx, 2000, Some(0), 1);
+        feed(&mut s, &mut t, &mut tx, 2000, Some(500_000), 3);
+        assert_eq!(s.limit, Some(1600));
+        for _ in 0..60 {
+            let l = s.limit.unwrap() as u64;
+            feed(&mut s, &mut t, &mut tx, l, Some(0), 1);
+        }
+        assert!(s.limit.unwrap() >= 2100, "{:?}", s.limit);
+        for _ in 0..240 {
+            let l = s.limit.unwrap() as u64;
+            feed(&mut s, &mut t, &mut tx, l, Some(0), 1);
+        }
+        assert!(s.limit.unwrap() >= 3000, "{:?}", s.limit);
+    }
+
+    #[test]
+    fn idle_for_half_an_hour_removes_the_limit() {
+        let (mut s, mut t, mut tx) = (Shaper::new(), 0, 0);
+        feed(&mut s, &mut t, &mut tx, 5000, Some(0), 1);
+        feed(&mut s, &mut t, &mut tx, 5000, Some(2_000_000), 3);
+        assert_eq!(s.limit, Some(4000));
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 50, Some(0), 1790), None);
+        assert_eq!(feed(&mut s, &mut t, &mut tx, 50, Some(0), 20), Some(Change::Off));
+        assert_eq!(s.limit, None);
     }
 
     #[test]

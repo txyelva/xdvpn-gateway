@@ -666,6 +666,13 @@ s.ThreadingTCPServer(("100.64.2.80", 9000), H).serve_forever()' >/dev/null 2>&1 
 	sleep 5
 	local kb=$(( ($(rt cat /sys/class/net/corp0/statistics/tx_bytes) - b0) * 8 / 5000 ))
 	if [ "$kb" -ge $((lim * 8 / 10)) ]; then ok "上传本身照常进行：${kb} kbit/s"; else bad "上传被压得太低：${kb} kbit/s（上限 $lim）"; fi
+	# 只有这一台在传：上限要很快往上放（每 10 秒 10%，直到开始积压），不能一直卡在第一次测的八成
+	sleep 20
+	local lim2=$(jq -r '.tunnel.up_limit_kbit // 0' $ST)
+	b0=$(rt cat /sys/class/net/corp0/statistics/tx_bytes)
+	sleep 10
+	kb=$(( ($(rt cat /sys/class/net/corp0/statistics/tx_bytes) - b0) * 8 / 10000 ))
+	if [ "$kb" -ge 4000 ]; then ok "只有一台设备在传时用到接近线路全部能力：${kb} kbit/s（线路 5 Mbit/s，上限 ${lim} → ${lim2}）"; else bad "只有一台设备在传时只用到 ${kb} kbit/s（线路 5 Mbit/s，上限 ${lim} → ${lim2}）"; fi
 	# 一台设备开 6 路上传、另一台 1 路：按设备轮流，后者应拿到接近一半（按连接轮流只有 1/7）
 	local ip1=$(lan1 ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1) ip2=$(lan2 ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1) k
 	for k in 1 2 3 4; do lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 & done
