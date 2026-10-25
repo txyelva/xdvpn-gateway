@@ -740,7 +740,7 @@ impl Daemon {
                 }
                 let (cap, lim) = (mbit(self.shaper.cap), mbit(l));
                 if first {
-                    self.tl.push(Level::Info, &format!("有设备在往公司线路大量上传，把线路占满了（实际约 {}）：已把上传限到 {}、各连接轮流发，其它连接不再被拖慢", cap, lim));
+                    self.tl.push(Level::Info, &format!("有设备在往公司线路大量上传，把线路占满了（实际约 {}）：已把上传限到 {}、各设备轮流发，其它设备不再被拖慢", cap, lim));
                     self.dirty = true;
                 }
                 report::log(&format!("公司线路上传占满（实际约 {}），限到 {}", cap, lim));
