@@ -701,7 +701,7 @@ s.ThreadingTCPServer(("100.64.2.80", 9000), H).serve_forever()' >/dev/null 2>&1 
 
 # 苹果推送（APNs）的长连接固定直连：走公司线路会被公司防火墙空闲超时、隧道重连悄悄断掉，通知收不到
 scenario_apns() {
-	CASE="苹果推送直连"
+	CASE="苹果推送走公司线路"
 	fresh_active
 	wan ip addr add 17.57.145.200/32 dev dummy0 2>/dev/null
 	for p in 5223 2197 443; do
@@ -715,9 +715,13 @@ h.ThreadingHTTPServer(('17.57.145.200', $p), H).serve_forever()" >/dev/null 2>&1
 	done
 	sleep 1
 	local p
-	for p in 5223 2197; do check "苹果推送端口 $p 直连" "$(path lan1 17.57.145.200:$p)" direct; done
-	check "同一地址的其它端口仍走公司线路" "$(path lan1 17.57.145.200:443)" tunnel
-	check "按端口认推送连接的规则在" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -c -- '-d 17.0.0.0/8 -p tcp -m tcp --dport 5223 -j RETURN')" 1
+	# 这个地址同时被别的 Apple 域名的国内解析放进直连集合，推送仍走公司线路
+	rt ipset -exist add corpline_cn 17.57.145.200
+	for p in 5223 2197 443; do check "苹果推送端口 $p 走公司线路" "$(path lan1 17.57.145.200:$p)" tunnel; done
+	check "整台直连的设备不受影响" "$(path lan2 17.57.145.200:5223)" direct
+	check "推送网段之外的 Apple 地址照旧按直连集合" "$(rt ipset -exist add corpline_cn 100.64.2.80; path lan1 100.64.2.80)" direct
+	rt ipset del corpline_cn 100.64.2.80 2>/dev/null
+	check "按端口认推送连接的规则在" "$(rt iptables -t mangle -S CORPLINE_NEW | grep -c -- '-d 17.0.0.0/8 -p tcp -m tcp --dport 5223 -m set --match-set corpline_live dst')" 1
 	pkill -f "17.57.145.200"
 	wan ip addr del 17.57.145.200/32 dev dummy0 2>/dev/null
 	true

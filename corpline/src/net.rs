@@ -20,6 +20,8 @@ pub const SET_CNIP: &str = "corpline_cnip";
 pub const SET_OVS: &str = "corpline_ovs";
 const CH_MARK: &str = "CORPLINE";
 const CH_NEW: &str = "CORPLINE_NEW";
+/// 苹果推送服务器的网段（Apple 文档 102266 与常见分流规则；443 上的备用推送连接靠它认）
+const APNS_NETS: [&str; 5] = ["17.249.0.0/16", "17.252.0.0/16", "17.57.144.0/22", "17.188.128.0/18", "17.188.20.0/23"];
 const CH_FLOW: &str = "CORPLINE_FLOW";
 const CH_NAT: &str = "CORPLINE_NAT";
 const CH_MSS: &str = "CORPLINE_MSS";
@@ -191,10 +193,14 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
                 r.push_str(&format!("-A {} -m mac --mac-source {} -p {} --sport {}:{} -j RETURN\n", CH_NEW, mac, proto, a, b));
             }
         }
-        // 苹果推送（APNs）的长连接固定直连，原因见 dns::plan::always_direct；按端口认，手机自己缓存了地址、
-        // 没经过这里的 DNS 也能认出来（443 上的备用连接靠域名认）
+        // 苹果推送（APNs）固定走公司线路，原因见 dns::plan::always_overseas。按地址和端口认：手机自己缓存了地址、
+        // 没经过这里的 DNS 也能认出来；这些地址也可能被别的 Apple 域名的国内解析放进直连集合，所以放在直连判断前面。
+        // 只打标记不 RETURN，后面的规则都不会清掉它；隧道没连上时不匹配，照常直连。
         for port in ["5223", "2197"] {
-            r.push_str(&format!("-A {} -d 17.0.0.0/8 -p tcp --dport {} -j RETURN\n", CH_NEW, port));
+            r.push_str(&format!("-A {} -d 17.0.0.0/8 -p tcp --dport {} -m set --match-set {} dst -j MARK --set-xmark {}\n", CH_NEW, port, SET_LIVE, m));
+        }
+        for net in APNS_NETS {
+            r.push_str(&format!("-A {} -d {} -p tcp -m set --match-set {} dst -j MARK --set-xmark {}\n", CH_NEW, net, SET_LIVE, m));
         }
         // 国内直连（开关关闭时这三个集合都是空的）：
         //   中国服务名单里的网站 → 直连；

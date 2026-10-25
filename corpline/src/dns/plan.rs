@@ -30,10 +30,10 @@ pub enum Class {
     Default,
 }
 
-/// 苹果推送（APNs，iMessage、Telegram 等 App 的通知都靠它）：手机和它保持一条长连接、几乎不发数据。
-/// 走公司线路时这条连接会被公司防火墙的空闲超时、隧道重连悄悄断掉，手机要等下一次心跳（可能几十分钟）
-/// 才发现，期间推送全丢。国内直连苹果推送是通的，所以固定直连、用运营商解析出的国内节点。
-pub fn always_direct(name: &str) -> bool {
+/// 苹果推送（APNs，iMessage、Telegram 等 App 的通知都靠它）：从中国大陆 IP 连苹果推送服务器时，
+/// 海外 App（Telegram、X 等）的通知会被过滤掉（2026-05 起大量反馈，国内 App 不受影响），
+/// 推送连接必须从海外出口出去。所以固定用海外解析、走公司线路，即使用户把 apple.com 设成了直连。
+pub fn always_overseas(name: &str) -> bool {
     name == "push.apple.com" || name.ends_with(".push.apple.com")
 }
 
@@ -41,8 +41,8 @@ pub fn classify(name: &str, internal: &SuffixSet, direct: &SuffixSet, overseas: 
     if internal.matches(name) {
         return Class::Internal;
     }
-    if always_direct(name) {
-        return Class::Cn;
+    if always_overseas(name) {
+        return Class::Overseas;
     }
     // 用户单独设置的优先于内置名单（Apple 默认走海外解析，用户也可以把它改成直连）
     if direct.matches(name) {
@@ -127,15 +127,17 @@ mod tests {
     }
 
     #[test]
-    fn apple_push_is_always_direct() {
+    fn apple_push_is_always_overseas() {
         let (internal, overseas, cn) = sets();
         let none = SuffixSet::empty();
+        let apple_direct = SuffixSet::new(vec!["apple.com".into()]);
         for n in ["courier.push.apple.com", "1-courier.push.apple.com", "api.push.apple.com", "push.apple.com"] {
-            assert_eq!(classify(n, &internal, &none, &overseas, Some(&cn)), Class::Cn, "{}", n);
-            assert_eq!(classify(n, &internal, &none, &overseas, None), Class::Cn, "{}", n);
+            assert_eq!(classify(n, &internal, &none, &none, Some(&cn)), Class::Overseas, "{}", n);
+            assert_eq!(classify(n, &internal, &none, &overseas, None), Class::Overseas, "{}", n);
+            // 用户把 apple.com 设成直连也不影响推送
+            assert_eq!(classify(n, &internal, &apple_direct, &overseas, Some(&cn)), Class::Overseas, "{}", n);
         }
-        // 其它 Apple 域名照旧走海外解析
-        assert_eq!(classify("www.apple.com", &internal, &none, &overseas, Some(&cn)), Class::Overseas);
+        assert_eq!(classify("www.apple.com", &internal, &apple_direct, &overseas, Some(&cn)), Class::Cn);
         assert_eq!(classify("notpush.apple.com", &internal, &none, &overseas, Some(&cn)), Class::Overseas);
     }
 
