@@ -622,14 +622,24 @@ scenario_ct_mark() {
 scenario_upload_flood() {
 	CASE="大量上传占满公司线路"
 	fresh_active
+	local keep=$(/koolshare/bin/dbus get corpline_devices)
+	# 第二台设备也走公司线路，用来看"一台设备开很多连接时，别的设备还能不能排上"
+	dbset corpline_devices=$(printf '02:00:00:00:02:00\tMac Studio\t0\tcorp\t\n' | base64 -w0)
 	dbset corpline_no_dtls=1
 	api 1
 	wait_state active 90 >/dev/null
 	check "只走 TLS（模拟公司服务器不给 DTLS）" "$(jq -r '.tunnel.dtls' $ST)" null
 	wan tc qdisc replace dev wan-corp root netem rate 5mbit delay 15ms limit 200
-	(wan nc -lk 100.64.2.80 9000 >/dev/null 2>&1 &)
+	# 收上传的服务器（nc -lk 一次只收一条连接，用多线程的）
+	(wan python3 -c 'import socketserver as s
+class H(s.BaseRequestHandler):
+    def handle(self):
+        while self.request.recv(65536): pass
+s.ThreadingTCPServer.allow_reuse_address = True
+s.ThreadingTCPServer(("100.64.2.80", 9000), H).serve_forever()' >/dev/null 2>&1 &)
 	sleep 1
-	local t0=$(lan1 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/)
+	check "第二台设备也走公司线路" "$(path lan2 100.64.2.80)" tunnel
+	local t0=$(lan2 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/)
 	lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 &
 	local u1=$!
 	lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 &
@@ -642,12 +652,12 @@ scenario_upload_flood() {
 		n=$((n + 1))
 	done
 	if [ "$lim" -ge 2500 ] && [ "$lim" -le 4800 ]; then ok "开始上传 ${n} 秒内限速（线路 5 Mbit/s，限到 ${lim} kbit/s）"; else bad "没有按线路能力限速：${lim} kbit/s（${n} 秒）"; fi
-	check "限速方式（htb + sfq）" "$(rt tc qdisc show dev corp0 | grep -cE 'htb|sfq')" 2
+	check "限速方式（htb，按设备分 32 个桶，每桶 sfq）" "$(rt tc qdisc show dev corp0 | grep -cE 'htb|sfq')" 33
 	sleep 5
-	# 另一台走公司线路的设备（这里用同一台的新连接）：每次请求要过隧道 3 个来回
+	# 另一台走公司线路的设备：每次请求要过隧道 3 个来回
 	local i a=0 worst=0 v
 	for i in 1 2 3 4 5; do
-		v=$(lan1 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/ | awk '{printf "%d", $1 * 1000}')
+		v=$(lan2 curl -so /dev/null -m 10 -w '%{time_total}' http://100.64.2.80/ | awk '{printf "%d", $1 * 1000}')
 		[ "${v:-10000}" -gt "$worst" ] && worst=${v:-10000}
 		sleep 0.5
 	done
@@ -656,12 +666,27 @@ scenario_upload_flood() {
 	sleep 5
 	local kb=$(( ($(rt cat /sys/class/net/corp0/statistics/tx_bytes) - b0) * 8 / 5000 ))
 	if [ "$kb" -ge $((lim * 8 / 10)) ]; then ok "上传本身照常进行：${kb} kbit/s"; else bad "上传被压得太低：${kb} kbit/s（上限 $lim）"; fi
+	# 一台设备开 6 路上传、另一台 1 路：按设备轮流，后者应拿到接近一半（按连接轮流只有 1/7）
+	local ip1=$(lan1 ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1) ip2=$(lan2 ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1) k
+	for k in 1 2 3 4; do lan1 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 & done
+	lan2 sh -c 'head -c 400M /dev/zero | nc -q1 100.64.2.80 9000' >/dev/null 2>&1 &
+	rt iptables -I FORWARD -o corp0 -s $ip1
+	rt iptables -I FORWARD -o corp0 -s $ip2
+	sleep 8
+	rt iptables -Z FORWARD
+	sleep 8
+	local c1=$(rt iptables -L FORWARD -nvx | awk -v i=$ip1 '$7==i {print $2; exit}') c2=$(rt iptables -L FORWARD -nvx | awk -v i=$ip2 '$7==i {print $2; exit}')
+	rt iptables -D FORWARD -o corp0 -s $ip1
+	rt iptables -D FORWARD -o corp0 -s $ip2
+	local pct=$(( ${c2:-0} * 100 / (${c1:-0} + ${c2:-0} + 1) ))
+	if [ "$pct" -ge 35 ]; then ok "6 路上传的设备和 1 路上传的设备按设备轮流：后者拿到 ${pct}%（$c2 / $c1 字节）"; else bad "1 路上传的设备只拿到 ${pct}%（$c2 / $c1 字节；按连接轮流时约 14%）"; fi
 	kill $u1 $u2 2>/dev/null
 	pkill -f "head -c 400M"
-	pkill -f "nc -lk 100.64.2.80 9000"
+	pkill -f "ThreadingTCPServer"
 	wait $u1 $u2 2>/dev/null
 	wan tc qdisc del dev wan-corp root 2>/dev/null
 	dbset corpline_no_dtls=0
+	dbset corpline_devices=$keep
 	api 1
 	wait_state active 90 >/dev/null
 	check "重新应用设置后不再限速" "$(rt tc qdisc show dev corp0 | grep -c htb)" 0

@@ -705,25 +705,45 @@ pub fn tun_up(dev: &str, addr: &str, mtu: &str, table: u32) -> bool {
     a && b && c
 }
 
-/// 隧道上行限速 + 按连接轮流发（htb 一个类，下面挂 sfq）；已经装好时只改速率。
+/// 按家里设备分多少桶（设备原始地址取哈希；同时大量上传的设备一般不到这么多，撞桶也只是两台合用一份）
+const SHAPE_BUCKETS: u32 = 32;
+
+fn shape_rates(dev: &str, kbit: u32, op: &str) -> String {
+    let burst = (kbit as u64 * 1000 / 8 / 100).max(15_000);
+    // 总上限一个类；下面每个桶保底一份、都能借满总上限，htb 在桶之间轮流 —— 一台设备开几十条连接
+    // （BT、网盘同步）也只占一份，别的设备照样排得上
+    let mut b = format!("class {} dev {} parent 1: classid 1:1 htb rate {k}kbit ceil {k}kbit burst {} cburst {}\n", op, dev, burst, burst, k = kbit);
+    let share = (kbit / SHAPE_BUCKETS).max(8);
+    for i in 0..SHAPE_BUCKETS {
+        b.push_str(&format!(
+            "class {} dev {} parent 1:1 classid 1:{:x} htb rate {}kbit ceil {}kbit burst {} cburst {} quantum 1514\n",
+            op, dev, 0x10 + i, share, kbit, burst, burst
+        ));
+    }
+    b
+}
+
+/// 隧道上行限速 + 按设备轮流发，同一台设备的多条连接再由 sfq 轮流；已经装好时只改速率。
 /// 华硕固件的 tc 对 tun 网卡做 `replace` 会报 Invalid argument（实际却装上了），所以只用 add / change，
 /// 装完再看一眼是否真的在。
 pub fn shape_set(dev: &str, kbit: u32) -> bool {
-    let rate = format!("{}kbit", kbit);
-    // 每次能连发 10 ms 的量（至少 15 KB），避免高速率下被定时器粒度卡住
-    let burst = format!("{}", (kbit as u64 * 1000 / 8 / 100).max(15_000));
-    let class = |op: &str| run_ok("tc", &["class", op, "dev", dev, "parent", "1:", "classid", "1:1", "htb", "rate", &rate, "ceil", &rate, "burst", &burst, "cburst", &burst]);
     let installed = || {
-        let (_, out) = run("tc", &["qdisc", "show", "dev", dev]);
-        out.contains("qdisc htb 1:") && out.contains("qdisc sfq 10:")
+        let (_, q) = run("tc", &["qdisc", "show", "dev", dev]);
+        let (_, f) = run("tc", &["filter", "show", "dev", dev, "parent", "1:"]);
+        q.contains("qdisc htb 1:") && q.matches("qdisc sfq").count() as u32 >= SHAPE_BUCKETS && f.contains("nfct-src")
     };
-    if installed() && class("change") {
+    if installed() && run_stdin("tc", &["-batch", "-"], &shape_rates(dev, kbit, "change")) {
         return true;
     }
     shape_off(dev);
-    let _ = run_ok("tc", &["qdisc", "add", "dev", dev, "root", "handle", "1:", "htb", "default", "1"])
-        && class("add")
-        && run_ok("tc", &["qdisc", "add", "dev", dev, "parent", "1:1", "handle", "10:", "sfq", "perturb", "10"]);
+    let mut b = format!("qdisc add dev {} root handle 1: htb default {:x}\n", dev, 0x10);
+    b.push_str(&shape_rates(dev, kbit, "add"));
+    for i in 0..SHAPE_BUCKETS {
+        b.push_str(&format!("qdisc add dev {} parent 1:{:x} handle {:x}: sfq perturb 10\n", dev, 0x10 + i, 0x100 + i));
+    }
+    // 按家里设备的原始地址（地址转换前的）分桶
+    b.push_str(&format!("filter add dev {} parent 1: protocol all prio 1 handle 1 flow hash keys nfct-src divisor {} baseclass 1:{:x}\n", dev, SHAPE_BUCKETS, 0x10));
+    let _ = run_stdin("tc", &["-batch", "-"], &b);
     installed()
 }
 
