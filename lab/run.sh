@@ -626,7 +626,8 @@ scenario_security() {
 		rt iptables -t nat -I PREROUTING -i eth0 -p tcp --dport $p -j DNAT --to-destination 192.168.50.100:$p
 	done
 	rt iptables -I FORWARD -i eth0 -m conntrack --ctstate DNAT -j ACCEPT
-	dbset corpline_devices=$(printf '02:00:00:00:01:00\t测试电脑\t0\tcorp\t\n' | base64 -w0)
+	# 测试电脑的 3981 设为「直连端口」（像 NAS 上的 BT）：从这个端口发出的连接不算异常外连
+	dbset corpline_devices=$(printf '02:00:00:00:01:00\t测试电脑\t0\tcorp\t3981\n' | base64 -w0)
 	dbset corpline_notify=feishu
 	dbset corpline_notify_url=http://100.64.2.81:8080/feishu/ok
 	: >$S/hook.log
@@ -668,6 +669,10 @@ scenario_security() {
 	sleep 4
 	check "名单里的外网地址连不进来" "$(knock 100.64.3.4 9000)" fail
 	check "名单里的私有网段被去掉" "$(rt ipset test corpline_bad 10.1.1.1 2>&1 | grep -c 'is in set')" 0
+	local t0=$(date +%s)
+	lan1 curl -s -m4 --local-port 3981 -o /dev/null http://100.64.2.81/
+	sleep 4
+	check "从直连端口（BT）连名单里的地址不提醒" "$(sec_json "[.events[] | select(.kind==\"out_bad\" and .t >= $t0)] | length")" 0
 	check "家里设备仍能访问名单里的地址（只提醒不拦）" "$(lan1 curl -s -m4 http://100.64.2.81/ | awk '{print $2}')" 100.64.1.10
 	sec_wait '[.events[] | select(.kind=="out_bad" and .ip=="192.168.50.100")] | length == 1' 10 && ok "家里设备连恶意地址：$(sec_json '[.events[] | select(.kind=="out_bad")][0].m')" || bad "家里设备连恶意地址没有提醒"
 

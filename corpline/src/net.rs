@@ -318,6 +318,12 @@ fn sec_rules(cfg: &Config) -> String {
 
     // 家里设备往外：只记录、提醒，不拦
     a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j RETURN", SET_PRIV));
+    // 设备设了「直连端口」的程序（NAS 上的 BT、Plex）本来就和全世界的陌生地址收发，不算异常外连
+    for (mac, lo, hi) in &cfg.direct_ports {
+        for proto in ["tcp", "udp"] {
+            a(&mut r, CH_SECOUT, format!("-m mac --mac-source {} -p {} --sport {}:{} -j RETURN", mac, proto, lo, hi));
+        }
+    }
     a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j RETURN", SET_OK));
     a(&mut r, CH_SECOUT, format!("-m set --match-set {} dst -j {}", SET_BAD, CH_AL[0]));
     // 扫描外网：1 分钟内连了很多个不同的（地址, 高危端口）；同一目标重复连接不计数
