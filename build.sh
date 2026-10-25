@@ -21,6 +21,16 @@ done
 rm -f $L.tmp
 [ -f $L ] && [ "$(wc -l <$L)" -ge 50000 ] || { echo "中国服务名单下载失败，且没有可用的旧名单"; exit 1; }
 echo "中国服务名单 $(wc -l <$L) 条"
+# 中国 IP 段（国内直连用：直接连 IP 的国内 App 也直连；路由器之后每周自动更新）
+C=$P/configs/china-ips.txt
+for u in https://cdn.jsdelivr.net/gh/misakaio/chnroutes2@master/chnroutes.txt \
+	https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt; do
+	curl -fsSL -m 120 "$u" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' >$C.tmp || true
+	[ "$(wc -l <$C.tmp)" -ge 1000 ] && mv -f $C.tmp $C && break
+done
+rm -f $C.tmp
+[ -f $C ] && [ "$(wc -l <$C)" -ge 1000 ] || { echo "中国 IP 段下载失败，且没有可用的旧名单"; exit 1; }
+echo "中国 IP 段 $(wc -l <$C) 段"
 # 公开的恶意 IP 名单（安全防护用，路由器之后每周自动更新）
 B=$P/configs/bad-ips.netset
 for u in https://cdn.jsdelivr.net/gh/firehol/blocklist-ipsets@master/firehol_level1.netset \

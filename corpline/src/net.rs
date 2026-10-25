@@ -12,6 +12,10 @@ use std::net::Ipv4Addr;
 pub const SET_LIVE: &str = "corpline_live";
 pub const SET_BYPASS: &str = "corpline_bypass";
 pub const SET_CN: &str = "corpline_cn";
+/// 中国 IP 段（国内直连开启时装入）：没查过域名、直接连 IP 的国内 App（微信等）也直连
+pub const SET_CNIP: &str = "corpline_cnip";
+/// 公司内网域名与例外网站（默认 Apple）最近解析出的 IP：即使在中国 IP 段里也走公司线路
+pub const SET_OVS: &str = "corpline_ovs";
 const CH_MARK: &str = "CORPLINE";
 const CH_NEW: &str = "CORPLINE_NEW";
 const CH_NAT: &str = "CORPLINE_NAT";
@@ -119,7 +123,9 @@ pub fn create_sets() -> bool {
     let a = run_ok("ipset", &["-exist", "create", SET_LIVE, "hash:net", "family", "inet", "hashsize", "64", "maxelem", "16"]);
     let b = run_ok("ipset", &["-exist", "create", SET_BYPASS, "hash:net", "family", "inet", "hashsize", "64", "maxelem", "1024"]);
     let c = run_ok("ipset", &["-exist", "create", SET_CN, "hash:ip", "family", "inet", "timeout", "0", "maxelem", "65536"]);
-    a && b && c
+    let d = run_ok("ipset", &["-exist", "create", SET_CNIP, "hash:net", "family", "inet", "maxelem", "65536"]);
+    let e = run_ok("ipset", &["-exist", "create", SET_OVS, "hash:ip", "family", "inet", "timeout", "0", "maxelem", "65536"]);
+    a && b && c && d && e
 }
 
 /// 建立/重建防火墙规则（幂等；固件重建防火墙后再调一次即可恢复）
@@ -150,7 +156,14 @@ pub fn apply_fw(cfg: &Config) -> Result<(), String> {
                 r.push_str(&format!("-A {} -m mac --mac-source {} -p {} --sport {}:{} -j RETURN\n", CH_NEW, mac, proto, a, b));
             }
         }
+        // 国内直连（开关关闭时这三个集合都是空的）：
+        //   中国服务名单里的网站 → 直连；
+        //   公司内网域名、例外网站（Apple 等用海外解析的）解析出的 IP → 走公司线路，即使它在中国 IP 段里；
+        //   其余落在中国 IP 段里的 → 直连（直接连 IP、不查域名的国内 App 也能直连）。
         r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CN));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_OVS, SET_LIVE, m));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_OVS));
+        r.push_str(&format!("-A {} -m set --match-set {} dst -j RETURN\n", CH_NEW, SET_CNIP));
         r.push_str(&format!("-A {} -m set --match-set {} dst -j CONNMARK --set-xmark {}\n", CH_NEW, SET_LIVE, m));
         r.push_str(&format!("-A {} -m state --state NEW -j {}\n", CH_MARK, CH_NEW));
         r.push_str(&format!("-A {} -m connmark --mark {} -j MARK --set-xmark {}\n", CH_MARK, m, m));
@@ -566,7 +579,30 @@ pub fn has_default_route() -> bool {
 }
 
 pub fn flush_cn() {
-    run_ok("ipset", &["flush", SET_CN]);
+    for s in [SET_CN, SET_CNIP, SET_OVS] {
+        run_ok("ipset", &["flush", s]);
+    }
+}
+
+/// 中国 IP 段名单（chnroutes2 格式：每行一个 a.b.c.d/n，# 开头是注释）。/8 以内的大段与格式不对的行丢掉
+pub fn parse_cn_ips(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (ip, len) = l.split_once('/').unwrap_or((l, "32"));
+            let ip: Ipv4Addr = ip.parse().ok()?;
+            let len: u32 = len.parse().ok()?;
+            if !(8..=32).contains(&len) {
+                return None;
+            }
+            Some(format!("{}/{}", ip, len))
+        })
+        .collect()
+}
+
+pub fn set_cn_ips(nets: &[String]) -> bool {
+    replace_set(SET_CNIP, "hash:net", "family inet maxelem 65536", nets)
 }
 
 /// 启用时的一次性准备
@@ -608,7 +644,7 @@ pub fn cleanup(cfg: &Config) {
         while ip_rule("del", &args) {}
     }
     run_ok("ip", &["route", "flush", "table", &cfg.table.to_string()]);
-    for s in [SET_LIVE, SET_BYPASS, SET_CN, "corpline_bypass_tmp"] {
+    for s in [SET_LIVE, SET_BYPASS, SET_CN, SET_CNIP, SET_OVS, "corpline_bypass_tmp", "corpline_cnip_t"] {
         run_ok("ipset", &["destroy", s]);
     }
     restore_rp_filter(cfg);
@@ -696,4 +732,15 @@ pub fn isp_dns(cfg: &Config) -> Vec<Ipv4Addr> {
         }
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cn_ip_list() {
+        let t = "# 4784341 routes were dumped\n1.1.8.0/24\n\n61.151.0.0/16 \n10.0.0.0/7\nbad\n1.2.3.4\n300.1.1.0/24\n";
+        assert_eq!(parse_cn_ips(t), vec!["1.1.8.0/24", "61.151.0.0/16", "1.2.3.4/32"], "注释、空行、短于 /8 和格式不对的都丢掉");
+    }
 }

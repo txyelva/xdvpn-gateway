@@ -176,6 +176,10 @@ struct Daemon {
     /// 本进程启动时刻（墙钟秒）：网页靠它区分"新启动的守护程序"与"即将被停掉的旧进程"
     started: u64,
     guard: guard::Guard,
+    /// 中国 IP 段名单文件的修改时间与条数（国内直连开启时装进内核；每周更新后自动换上）
+    cn_ips_mtime: Option<std::time::SystemTime>,
+    cn_ips: usize,
+    cn_ips_warned: bool,
 }
 
 fn run(conf: &Path) -> i32 {
@@ -240,6 +244,7 @@ fn run(conf: &Path) -> i32 {
         cn,
         filter_aaaa: cfg.filter_aaaa,
         cn_ipset: net::SET_CN.to_string(),
+        ovs_ipset: if cfg.cn_direct { Some(net::SET_OVS.to_string()) } else { None },
     };
     let (tx, rx) = mpsc::channel::<Msg>();
     let ntx = Mutex::new(tx.clone());
@@ -318,7 +323,11 @@ fn run(conf: &Path) -> i32 {
         live_pending: None,
         started: sys::wall_secs(),
         guard,
+        cn_ips_mtime: None,
+        cn_ips: 0,
+        cn_ips_warned: false,
     };
+    d.load_cn_ips();
     let acts = d.m.start(sys::now_ms());
     d.apply(acts);
     d.main_loop(rx);
@@ -420,6 +429,7 @@ impl Daemon {
             }
             if now.saturating_sub(last_isp) >= 60_000 {
                 last_isp = now;
+                self.load_cn_ips();
                 self.refresh_bypass();
                 let isp = net::isp_dns(&self.cfg);
                 if isp != self.isp {
@@ -659,6 +669,32 @@ impl Daemon {
         }
     }
 
+    /// 国内直连开启时，把中国 IP 段装进内核；文件没变不重装，文件坏了保留已装的那份
+    fn load_cn_ips(&mut self) {
+        if !self.cfg.cn_direct {
+            return;
+        }
+        let m = std::fs::metadata(&self.cfg.cn_ip_list).and_then(|x| x.modified()).ok();
+        if m.is_some() && m == self.cn_ips_mtime {
+            return;
+        }
+        let nets = net::parse_cn_ips(&std::fs::read_to_string(&self.cfg.cn_ip_list).unwrap_or_default());
+        if nets.len() < 1000 {
+            // 名单缺失或不完整：已装进内核的那份照用；一份都没有时在时间线说一次，不每分钟刷
+            if self.cn_ips == 0 && !self.cn_ips_warned {
+                self.cn_ips_warned = true;
+                self.tl.push(Level::Warn, "没有找到中国 IP 段名单，国内 App 直接连 IP 时仍走公司线路（国内网站照常直连）");
+            }
+            self.cn_ips_mtime = m;
+            return;
+        }
+        if net::set_cn_ips(&nets) {
+            report::log(&format!("中国 IP 段 {} 条", nets.len()));
+            self.cn_ips = nets.len();
+            self.cn_ips_mtime = m;
+        }
+    }
+
     fn refresh_bypass(&mut self) {
         let nets = net::bypass_nets(&self.cfg, &self.server_ips);
         if nets != self.bypass && net::set_bypass(&nets) {
@@ -777,6 +813,7 @@ impl Daemon {
                     .n("cpu_pct", format!("{:.1}", self.cpu_pct)),
             )
             .b("cn_direct", self.cfg.cn_direct)
+            .n("cn_ips", self.cn_ips)
             .n("updated", wall)
             .raw("events", report::events_json(&self.tl.items, 30))
             .done();

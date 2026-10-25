@@ -201,7 +201,7 @@ def set_cn(kind):
     for k in [k for k in db if k.startswith("corpline_cn_") and k != "corpline_cn_direct"]:
         db.pop(k)
     db["corpline_cn_direct"] = "1"
-    base = {"corpline_cn_count": "109513", "corpline_cn_time": str(now - 86400 * 3), "corpline_cn_src": "bundle", "corpline_cn_state": "ok"}
+    base = {"corpline_cn_count": "109513", "corpline_cnip_count": "3881", "corpline_cn_time": str(now - 86400 * 3), "corpline_cn_src": "bundle", "corpline_cn_state": "ok"}
     if kind == "bundle":
         db.update(base)
     elif kind == "download":

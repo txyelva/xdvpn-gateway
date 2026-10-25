@@ -47,6 +47,19 @@ install_cn() {
 	fi
 }
 
+# 安装包自带的中国 IP 段：规则同上
+install_cnip() {
+	local src=$DIR/configs/china-ips.txt dst=/koolshare/configs/corpline/china-ips.txt bt ct
+	[ -s $src ] || return 0
+	bt=$(date -r $src +%s 2>/dev/null)
+	ct=$(dbus get corpline_cnip_time)
+	if [ ! -s $dst ] || [ "${bt:-0}" -gt "${ct:-0}" ]; then
+		put $src $dst 644
+		dbus set corpline_cnip_count=$(wc -l <$dst)
+		dbus set corpline_cnip_time=$bt
+	fi
+}
+
 # 安装包自带的恶意地址名单：同样只在路由器上没有、或安装包里的更新时换上
 install_bad() {
 	local src=$DIR/configs/bad-ips.netset dst=/koolshare/configs/corpline/bad-ips.netset bt ct
@@ -75,6 +88,7 @@ install_now() {
 	put $DIR/res/icon-corpline.png /koolshare/res/icon-corpline.png 644
 	[ -f $DIR/res/corpline-bg.png ] && put $DIR/res/corpline-bg.png /koolshare/res/corpline-bg.png 644
 	install_cn
+	install_cnip
 	install_bad
 	put $DIR/uninstall.sh /koolshare/scripts/uninstall_corpline.sh 755
 

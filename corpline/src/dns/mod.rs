@@ -84,6 +84,8 @@ pub struct Static {
     pub cn: Option<SuffixSet>,
     pub filter_aaaa: bool,
     pub cn_ipset: String,
+    /// 国内直连开启时：公司内网域名和例外网站（Apple 等）的应答 IP 写进这里，让它们不被中国 IP 段规则带去直连
+    pub ovs_ipset: Option<String>,
 }
 
 struct Up {
@@ -137,6 +139,9 @@ struct Pending {
 }
 
 struct Job {
+    set: String,
+    /// 写进集合的最短保留秒数
+    min_secs: u32,
     ips: Vec<(Ipv4Addr, u32)>,
     resp: Vec<u8>,
     client: SocketAddr,
@@ -169,9 +174,8 @@ impl Engine {
         let st = Arc::new(st);
         let (tx, rx) = mpsc::channel::<Job>();
         let out = udp.try_clone()?;
-        let set = st.cn_ipset.clone();
         let recent = recent::Recent::new(st.recent_file.clone());
-        std::thread::Builder::new().name("ipset".into()).stack_size(64 * 1024).spawn(move || ipset_worker(rx, out, set))?;
+        std::thread::Builder::new().name("ipset".into()).stack_size(64 * 1024).spawn(move || ipset_worker(rx, out))?;
         Ok(Engine {
             shared,
             st,
@@ -597,10 +601,11 @@ impl Engine {
         if !p.tunneled || (from == Kind::Isp && p.class != Class::Cn) {
             msg::cap_ttl(&mut resp, FALLBACK_TTL_CAP);
         }
-        if p.tunneled && p.class == Class::Cn && from == Kind::Isp {
+        // 先写进集合再回给设备：设备拿到地址立刻连，规则已经在了
+        if let Some((set, min_secs)) = record_set(&self.st, p.class, p.tunneled, from) {
             let ips = msg::a_records(&resp);
             if !ips.is_empty() {
-                let _ = self.ipset_tx.send(Job { ips, resp, client: p.client });
+                let _ = self.ipset_tx.send(Job { set: set.to_string(), min_secs, ips, resp, client: p.client });
                 return;
             }
         }
@@ -736,8 +741,8 @@ fn serve_tcp(mut client: TcpStream, ctx: &TcpCtx) -> std::io::Result<()> {
                     if !v.tunneled {
                         msg::cap_ttl(&mut r, FALLBACK_TTL_CAP);
                     }
-                    if v.tunneled && class == Class::Cn && t.kind == Kind::Isp {
-                        ipset_add(&ctx.st.cn_ipset, &msg::a_records(&r), &mut HashMap::new());
+                    if let Some((set, min_secs)) = record_set(&ctx.st, class, v.tunneled, t.kind) {
+                        ipset_add(set, min_secs, &msg::a_records(&r), &mut HashMap::new());
                     }
                     return write_frame(&mut client, &r);
                 }
@@ -750,12 +755,27 @@ fn serve_tcp(mut client: TcpStream, ctx: &TcpCtx) -> std::io::Result<()> {
     write_frame(&mut client, &r)
 }
 
+/// 这条应答的 IP 要记进哪个集合、至少记多久：
+/// 中国服务（运营商解析的）→ 国内直连集合；
+/// 公司内网域名（可能是只认公司出口的国内公网地址）与例外网站 → 走公司线路的集合，记得久一点
+/// （App 常把地址缓存好几个小时，过期后再连就会落进中国 IP 段被带去直连）
+fn record_set(st: &Static, class: Class, tunneled: bool, from: Kind) -> Option<(&str, u32)> {
+    if !tunneled {
+        return None;
+    }
+    match class {
+        Class::Cn if from == Kind::Isp => Some((st.cn_ipset.as_str(), 300)),
+        Class::Overseas | Class::Internal => st.ovs_ipset.as_deref().map(|s| (s, 6 * 3600)),
+        _ => None,
+    }
+}
+
 /// 返回是否执行成功；cache 记录已加入的 IP 与到期时间，避免重复调用
-fn ipset_add(set: &str, ips: &[(Ipv4Addr, u32)], cache: &mut HashMap<Ipv4Addr, u64>) -> bool {
+fn ipset_add(set: &str, min_secs: u32, ips: &[(Ipv4Addr, u32)], cache: &mut HashMap<Ipv4Addr, u64>) -> bool {
     let now = sys::now_ms();
     let mut input = String::new();
     for (ip, ttl) in ips {
-        let t = (*ttl).clamp(300, 86400);
+        let t = (*ttl).clamp(min_secs, 86400);
         if let Some(&exp) = cache.get(ip) {
             if exp > now + 120_000 {
                 continue;
@@ -773,8 +793,8 @@ fn ipset_add(set: &str, ips: &[(Ipv4Addr, u32)], cache: &mut HashMap<Ipv4Addr, u
     sys::run_stdin("ipset", &["restore", "-!"], &input)
 }
 
-fn ipset_worker(rx: mpsc::Receiver<Job>, out: UdpSocket, set: String) {
-    let mut cache = HashMap::new();
+fn ipset_worker(rx: mpsc::Receiver<Job>, out: UdpSocket) {
+    let mut caches: HashMap<String, HashMap<Ipv4Addr, u64>> = HashMap::new();
     while let Ok(first) = rx.recv() {
         let mut jobs = vec![first];
         while let Ok(j) = rx.try_recv() {
@@ -783,8 +803,16 @@ fn ipset_worker(rx: mpsc::Receiver<Job>, out: UdpSocket, set: String) {
                 break;
             }
         }
-        let ips: Vec<(Ipv4Addr, u32)> = jobs.iter().flat_map(|j| j.ips.iter().copied()).collect();
-        ipset_add(&set, &ips, &mut cache);
+        let mut groups: Vec<(&str, u32, Vec<(Ipv4Addr, u32)>)> = Vec::new();
+        for j in &jobs {
+            match groups.iter_mut().find(|g| g.0 == j.set && g.1 == j.min_secs) {
+                Some(g) => g.2.extend(j.ips.iter().copied()),
+                None => groups.push((&j.set, j.min_secs, j.ips.clone())),
+            }
+        }
+        for (set, min_secs, ips) in groups {
+            ipset_add(set, min_secs, &ips, caches.entry(set.to_string()).or_default());
+        }
         for j in jobs {
             let _ = out.send_to(&j.resp, j.client);
         }
@@ -826,5 +854,35 @@ pub fn resolve_once(server: Ipv4Addr, dev: Option<&str>, name: &str, timeout: Du
         }
         let rtt = (sys::now_ms() - t0) as u32;
         return Ok((msg::a_records(r).into_iter().map(|x| x.0).collect(), rtt));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn st(ovs: bool) -> Static {
+        Static {
+            overseas: SuffixSet::empty(),
+            direct: SuffixSet::empty(),
+            recent_file: None,
+            cn: None,
+            filter_aaaa: true,
+            cn_ipset: "cn".into(),
+            ovs_ipset: if ovs { Some("ovs".into()) } else { None },
+        }
+    }
+
+    #[test]
+    fn which_set_records_answers() {
+        let s = st(true);
+        assert_eq!(record_set(&s, Class::Cn, true, Kind::Isp), Some(("cn", 300)));
+        assert_eq!(record_set(&s, Class::Cn, true, Kind::Company), None, "运营商没答上、改问公司 DNS 的不算国内");
+        assert_eq!(record_set(&s, Class::Overseas, true, Kind::Overseas), Some(("ovs", 6 * 3600)));
+        assert_eq!(record_set(&s, Class::Overseas, true, Kind::Company), Some(("ovs", 6 * 3600)), "海外 DNS 挂了改问公司 DNS 的也是例外网站");
+        assert_eq!(record_set(&s, Class::Internal, true, Kind::Company), Some(("ovs", 6 * 3600)), "公司内网域名在中国 IP 段里也走公司线路");
+        assert_eq!(record_set(&s, Class::Default, true, Kind::Company), None);
+        assert_eq!(record_set(&s, Class::Overseas, false, Kind::Isp), None, "直连期间什么都不记");
+        assert_eq!(record_set(&st(false), Class::Overseas, true, Kind::Overseas), None, "国内直连关闭时不记例外");
     }
 }

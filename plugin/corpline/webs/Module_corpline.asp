@@ -1129,7 +1129,7 @@ var CL = (function () {
 		renderCnList();
 	}
 
-	// 中国服务名单：有多少、哪天的、正在下载、上次为什么没下成（路由器写在 corpline_cn_*）
+	// 中国服务名单：有多少、哪天的、正在下载、上次为什么没下成（路由器写在 corpline_cn_*；IP 段条数在 corpline_cnip_count）
 	var cnTimer = null;
 	function dayLabel(t) {
 		var d = new Date(t * 1000), today = dayStart(new Date()), day = dayStart(d);
@@ -1164,7 +1164,8 @@ var CL = (function () {
 				: '名单下载没成功：' + why + (at ? '（' + whenLabel(at) + '）' : '') + '，国内网站直连暂不生效';
 			label = '重试';
 		} else if (have) {
-			text = '名单 ' + thousands(n) + ' 个网站 · ' + (db.corpline_cn_src === 'bundle' ? '安装包自带' + (t ? '，' + dayLabel(t) : '')
+			var ips = num(db.corpline_cnip_count);
+			text = '名单 ' + thousands(n) + ' 个网站' + (ips ? '、' + thousands(ips) + ' 个国内 IP 段' : '') + ' · ' + (db.corpline_cn_src === 'bundle' ? '安装包自带' + (t ? '，' + dayLabel(t) : '')
 				: (t ? dayLabel(t) + '更新' : '已下载')) + ' · 每周一凌晨自动更新';
 		} else {
 			text = '还没有名单，国内网站直连暂不生效';

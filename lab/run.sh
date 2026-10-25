@@ -356,6 +356,12 @@ scenario_cn_direct() {
 	mkdir -p /koolshare/configs/corpline
 	# 名单缺失时开启：时间线提示暂不生效；名单到位重启后补一条"已就绪"
 	mv -f /koolshare/configs/corpline/china-domains.conf /tmp/cn.keep 2>/dev/null
+	# 中国 IP 段：沙盒里把 100.64.2.80（国内网站）、203.0.113.81（Apple 的海外解析结果）、
+	# 172.24.10.10（公司内网域名的地址）算作国内地址，100.64.2.81 不算；补足 1000 条，名单太短会被当成不完整
+	local CI=/koolshare/configs/corpline/china-ips.txt
+	check "安装包自带中国 IP 段" "$([ "$(wc -l <$CI 2>/dev/null)" -ge 1000 ] && echo yes)" yes
+	cp -f $CI /tmp/cnip.keep
+	{ printf '100.64.2.80/32\n203.0.113.81/32\n172.24.10.10/32\n'; for i in $(seq 1 1100); do echo "44.$((i / 250)).$((i % 250)).0/24"; done; } >$CI
 	dbset corpline_cn_direct=1
 	api 1
 	wait_state active 60 >/dev/null
@@ -371,11 +377,29 @@ scenario_cn_direct() {
 	check "中国服务域名由谁解析" "$(resolve x www.baidu.com)" 100.64.2.80
 	check "访问中国服务（按域名进 ipset）" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.0.2
 	check "其它网站仍走公司线路" "$(path lan1 100.64.2.81)" tunnel
+	check "中国 IP 段已装进内核" "$(jq -r .cn_ips $ST)" 1103
+	check "不查域名、直接连中国 IP（像微信）走直连" "$(path lan1 100.64.2.80)" direct
+	# 例外网站优先于中国 IP 段：没查过 Apple 时这个地址按中国 IP 直连（沙盒里直连到不了它），查过之后走公司线路
+	check "中国 IP 段里的地址默认直连" "$(path lan1 203.0.113.81)" fail
 	check "Apple 仍走海外解析" "$(resolve x apps.apple.com)" 203.0.113.81
+	check "Apple 解析出的地址在中国 IP 段里也走公司线路" "$(path lan1 203.0.113.81)" tunnel
+	check "公司内网域名" "$(resolve x git.corp.test)" 172.24.10.10
+	check "公司内网域名的地址在中国 IP 段里也走公司线路" "$(path lan1 172.24.10.10)" tunnel
+	check "路由器自身仍直连" "$(path rt 100.64.2.81)" direct
+	# 每周更新名单后不用重启：守护程序 1 分钟内发现文件变化，重新装进内核
+	local pid0=$(cl_pid) i=0
+	echo 100.64.2.81/32 >>$CI
+	while [ $i -lt 75 ] && [ "$(path lan1 100.64.2.81 2)" != direct ]; do sleep 3; i=$((i + 3)); done
+	if [ $i -lt 75 ]; then ok "中国 IP 段更新后 ${i} 秒内生效，没有重启"; else bad "中国 IP 段更新后 75 秒仍未生效"; fi
+	sleep 6
+	check "更新后的条数" "$(jq -r .cn_ips $ST)" 1104
+	check "更新时没有重启守护程序" "$(cl_pid)" "$pid0"
 	dbset corpline_cn_direct=0
 	api 1
 	wait_state active 60 >/dev/null
 	check "关闭后中国服务走公司线路" "$(lan1 curl -s -m4 http://www.baidu.com/ | awk '{print $2}')" 100.64.1.10
+	check "关闭后中国 IP 段不生效" "$(path lan1 100.64.2.80)" tunnel
+	mv -f /tmp/cnip.keep $CI
 }
 
 scenario_resources() {

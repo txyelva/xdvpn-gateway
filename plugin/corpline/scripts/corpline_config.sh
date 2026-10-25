@@ -224,6 +224,7 @@ gen_conf() {
 			[ -n "$corpline_internal_domains" ] && kv internal_domains "$corpline_internal_domains"
 			kv cn_direct "${corpline_cn_direct:-0}"
 			echo "cn_list=$CFGDIR/china-domains.conf"
+			echo "cn_ip_list=$CFGDIR/china-ips.txt"
 			kv sensitivity "${corpline_sensitivity:-normal}"
 			# 安全防护：外来的自动封锁，家里设备只提醒；白名单改了不用重启（守护程序看到配置文件变化就更新）
 			kv sec_enable "${corpline_sec_enable:-1}"
@@ -495,12 +496,43 @@ cn_lock() {
 	mkdir -p $RUN
 	echo $$ >$RUN/cn.pid
 }
+# 中国 IP 段（misakaio/chnroutes2，按 BGP 路由表每天生成）：直接连 IP、不查域名的国内 App 靠它直连。
+# 和中国服务名单一起更新；守护程序看到文件变化自己重新装进内核，不用重启。失败保留旧名单。
+CNIP_PATH=misakaio/chnroutes2@master/chnroutes.txt
+CNIP_URLS="https://cdn.jsdelivr.net/gh/$CNIP_PATH https://fastly.jsdelivr.net/gh/$CNIP_PATH https://testingcf.jsdelivr.net/gh/$CNIP_PATH https://raw.githubusercontent.com/misakaio/chnroutes2/master/chnroutes.txt"
+update_cnip() {
+	local dst=$CFGDIR/china-ips.txt tmp=$CFGDIR/china-ips.tmp n rc why u
+	for u in $CNIP_URLS; do
+		rm -f $tmp $tmp.raw
+		curl -fsS --connect-timeout 15 -m 60 -o $tmp.raw "$u" 2>/dev/null
+		rc=$?
+		[ $rc -ne 0 ] && { why=$rc; continue; }
+		grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' $tmp.raw >$tmp
+		rm -f $tmp.raw
+		n=$(wc -l <$tmp)
+		[ "${n:-0}" -ge 1000 ] || { why=short; continue; }
+		dbus set corpline_cnip_count=$n
+		dbus set corpline_cnip_time=$(date +%s)
+		if cmp -s $tmp $dst; then
+			rm -f $tmp
+		else
+			mv -f $tmp $dst
+			say "中国 IP 段已更新：$n 段"
+		fi
+		return 0
+	done
+	rm -f $tmp $tmp.raw
+	say "中国 IP 段更新失败（$(cn_reason ${why:-7})），继续用旧名单"
+	return 1
+}
+
 update_cn() {
 	local dst=$CFGDIR/china-domains.conf tmp=$CFGDIR/china-domains.tmp n rc why u
 	cn_lock || return 2
 	mkdir -p $CFGDIR
 	dbus set corpline_cn_state=downloading
 	dbus set corpline_cn_tried=$(date +%s)
+	update_cnip
 	for u in $CN_URLS; do
 		rm -f $tmp $tmp.raw
 		curl -fsS --connect-timeout 15 -m 120 -o $tmp.raw "$u" 2>/dev/null
