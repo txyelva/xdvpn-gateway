@@ -1,7 +1,7 @@
 # XDVPN for OpenWrt
 
 轻量的企业 VPN 插件，包含 LuCI 界面、Hillstone SCVPN 原生核心及可选的 OpenConnect 连接方式。
-当前核心 **0.7.2-1**、LuCI 界面 **0.7.2-1**。核心已在 iStoreOS 24.10.6 x86_64 连接真实 Hillstone 服务，验证内网 HTTPS、模拟 LAN 转发与主动断开清理。
+当前核心 **0.7.3-1**、LuCI 界面 **0.7.3-1**。核心已在 iStoreOS 24.10.6 x86_64 连接真实 Hillstone 服务，验证内网 HTTPS、模拟 LAN 转发与主动断开清理。
 完整记录见 [Hillstone 验证](docs/HILLSTONE-VALIDATION.md)。
 
 这是面向 OpenWrt 的独立实现，不替换上层目录中的华硕 Rust 守护程序或软件中心插件。
@@ -60,8 +60,10 @@ sh tests/test-routing-netns.sh package/luci-app-xdvpn/root/usr/libexec/xdvpn/pri
 先查看 `opkg print-architecture`，选择匹配的核心包。ARM64 已交叉构建，尚未真机验收。
 
 ```sh
-opkg install /tmp/xdvpn-hillstone_0.7.2-1_x86_64.ipk /tmp/luci-app-xdvpn_0.7.2-1_all.ipk
+opkg install /tmp/xdvpn-hillstone_0.7.3-1_x86_64.ipk /tmp/luci-app-xdvpn_0.7.3-1_all.ipk
 ```
+
+升级到 0.7.3 时，已有 netifd 可能仍缓存旧协议参数。请在允许短暂断网时重启网络服务或路由器，加载新的参数声明；安装脚本不会自动执行。加载前，修改策略仍可能触发重连。
 
 首次安装新协议后，检查 `ubus call network get_proto_handlers` 中是否包含 `xdvpn_hillstone`。
 若没有，需要在可短暂断网时重启网络服务；仅 reload 不一定注册新协议。
@@ -75,7 +77,7 @@ opkg install /tmp/xdvpn-hillstone_0.7.2-1_x86_64.ipk /tmp/luci-app-xdvpn_0.7.2-1
 
 ## 私有规则
 
-在“公司预设 + 手动补充”模式下，可选择 UTF-8 文本文件，点击“导入并替换预设”。只发送到当前路由器，不上传公共仓库。服务端校验后以 0600 权限原子替换本地清单；格式错误保留原文件，手动补充项不变。导入成功后通知当前连接热刷新，按已保存的模式生效，不自动切换模式。页面尚未保存的模式更改仍需保存并应用。导入功能需配套 0.7.2 核心和 LuCI。
+在“公司预设 + 手动补充”模式下，可选择 UTF-8 文本文件，点击“导入并替换预设”。只发送到当前路由器，不上传公共仓库。服务端校验后以 0600 权限原子替换本地清单；格式错误保留原文件，手动补充项不变。导入成功后通知当前连接热刷新，按已保存的模式生效，不自动切换模式。页面尚未保存的模式更改仍需保存并应用。导入功能需配套 0.7.3 核心和 LuCI。
 
 私有清单与代码、安装包分离，路由器固定路径为 `/etc/xdvpn/company-rules.txt`，每行一个 IPv4、CIDR 或域名（父域名包含子域名），可含空行或 `#` 注释；兼容中文逗号、分号、CRLF 和 BOM。IP 自动按 /32 处理，网段规范化并去重。最多 4096 个 IP/网段、256 个预设域名，文件最多 256 KiB。
 设置权限 `0600`，选择「公司预设 + 手动补充」后生效。界面展示条目数量；内容不写入公开源码或安装包。更新文件后点击保存并应用即可重载，无需重连。手动模式完全不读取预设；旧手动模式主动启用私有清单的配置迁移为公司预设模式。

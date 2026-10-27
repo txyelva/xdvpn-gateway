@@ -11,13 +11,10 @@ proto_xdvpn_hillstone_init_config() {
     proto_config_add_string username
     proto_config_add_string password
     proto_config_add_string xdvpn_cert_endpoint
-    proto_config_add_array xdvpn_domains
-    proto_config_add_array xdvpn_blacklist
     proto_config_add_string xdvpn_certpin
-    proto_config_add_boolean xdvpn_private_rules
-    proto_config_add_boolean xdvpn_protect_anthropic
-    proto_config_add_string xdvpn_mode
-    proto_config_add_array xdvpn_networks
+    # Policy keys stay in UCI but are read directly by the policy worker.
+    # Registering them here makes config.change/network reload tear down the VPN.
+    # Only transport and certificate changes belong in netifd's protocol schema.
     no_device=1
     available=1
 }

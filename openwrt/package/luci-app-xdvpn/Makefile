@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 LUCI_TITLE:=XDVPN OpenConnect connection panel
 LUCI_DEPENDS:=+luci-base +openconnect +ca-bundle +xdvpn-hillstone
 LUCI_PKGARCH:=all
-PKG_VERSION:=0.7.2
+PKG_VERSION:=0.7.3
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 

@@ -394,11 +394,11 @@ return view.extend({
             };
             page.refreshOverview();
             return E('div', { 'class': 'xdvpn-app' }, [
-                E('link', { rel: 'stylesheet', href: L.resource('view/xdvpn/style_v072.css') }),
+                E('link', { rel: 'stylesheet', href: L.resource('view/xdvpn/style_v073.css') }),
                 E('section', { 'class': 'xd-header', 'aria-labelledby': 'xd-overview-title' }, [
                     E('div', { 'class': 'xd-overview' }, [
                         E('div', { 'class': 'xd-brand-row' }, [E('h2', { id: 'xd-overview-title' }, 'XDVPN'), statusBadge]),
-                        E('p', { 'class': 'xd-overview-caption' }, '公司网络连接 · UI 0.7.2'),
+                        E('p', { 'class': 'xd-overview-caption' }, '公司网络连接 · UI 0.7.3'),
                         E('div', { 'class': 'xd-status-copy', role: 'status', 'aria-live': 'polite' }, statusDetail)
                     ]),
                     E('div', { 'class': 'xd-actions' }, [

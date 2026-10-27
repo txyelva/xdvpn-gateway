@@ -18,7 +18,7 @@ files.append(('lib/upgrade/keep.d/xdvpn',(root/'package/xdvpn-hillstone/root/lib
 files.append(('usr/libexec/xdvpn/hillstone-run',(root/'package/xdvpn-hillstone/root/usr/libexec/xdvpn/hillstone-run').read_bytes(),0o755))
 files.append(('etc/init.d/xdvpn-policy',(root/'package/xdvpn-hillstone/root/etc/init.d/xdvpn-policy').read_bytes(),0o755))
 control=f"""Package: xdvpn-hillstone
-Version: 0.7.2-1
+Version: 0.7.3-1
 Architecture: {args.arch}
 Maintainer: XDVPN OpenWrt contributors
 Section: net
@@ -29,5 +29,5 @@ Installed-Size: {sum(len(b) for _,b,_ in files)}
 Description: Lightweight Hillstone SCVPN client for XDVPN
 """.encode()
 out=m.archive([('debian-binary',b'2.0\n',0o644),('control.tar.gz',m.archive([('control',control,0o644),('prerm',(root/'package/xdvpn-hillstone/prerm').read_bytes(),0o755)]),0o644),('data.tar.gz',m.archive(files),0o644)])
-target=dist/('xdvpn-hillstone_0.7.2-1_'+args.arch+'.ipk');target.write_bytes(out)
+target=dist/('xdvpn-hillstone_0.7.3-1_'+args.arch+'.ipk');target.write_bytes(out)
 print(target.name,'bytes=',len(out),'sha256=',hashlib.sha256(out).hexdigest())

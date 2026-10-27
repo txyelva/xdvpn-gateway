@@ -4,7 +4,7 @@
     "order": 65,
     "action": {
       "type": "view",
-      "path": "xdvpn/main_v072"
+      "path": "xdvpn/main_v073"
     },
     "depends": {
       "acl": [

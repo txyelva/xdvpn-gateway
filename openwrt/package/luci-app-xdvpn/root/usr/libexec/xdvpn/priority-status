@@ -4,6 +4,9 @@ state=/var/run/xdvpn-priority
 if [ ! -e "$state/pbr-owned" ]; then [ "$1" != --check ] || exit 1; echo '{"status":"inactive"}'; exit 0; fi
 ok=true
 for chain in mangle_prerouting dstnat mangle_output nat_output; do
+ # Native fw4 has no nat_output; inspect it only when another plugin creates it.
+ # Missing required fw4 chains must still fail the check below.
+ if [ "$chain" = nat_output ] && ! nft list chain inet fw4 "$chain" >/dev/null 2>&1; then continue; fi
  first=$(nft -a list chain inet fw4 "$chain" 2>/dev/null | sed -n '/# handle/p' | sed '/chain .*{/d' | head -1)
  case "$first" in *'jump xdvpn_select'*'comment "xdvpn-priority"'*) :;; *) ok=false;; esac
 done

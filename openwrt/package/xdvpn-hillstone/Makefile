@@ -1,6 +1,6 @@
 include $(TOPDIR)/rules.mk
 PKG_NAME:=xdvpn-hillstone
-PKG_VERSION:=0.7.2
+PKG_VERSION:=0.7.3
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-3.0-only
 PKG_BUILD_DEPENDS:=golang/host

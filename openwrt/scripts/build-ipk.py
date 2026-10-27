@@ -38,7 +38,7 @@ def main():
                 payload.append((name, path.read_bytes(), mode))
     payload.append(('usr/share/licenses/luci-app-xdvpn/LICENSE', (ROOT / 'LICENSE').read_bytes(), 0o644))
     control = f'''Package: luci-app-xdvpn
-Version: 0.7.2-1
+Version: 0.7.3-1
 Architecture: all
 Maintainer: XDVPN OpenWrt contributors
 Section: luci
@@ -77,7 +77,7 @@ exit 0
     ])
     dist = ROOT / 'dist'
     dist.mkdir(exist_ok=True)
-    target = dist / 'luci-app-xdvpn_0.7.2-1_all.ipk'
+    target = dist / 'luci-app-xdvpn_0.7.3-1_all.ipk'
     target.write_bytes(result)
     (dist / 'SHA256SUMS').write_text(hashlib.sha256(result).hexdigest() + '  ' + target.name + '\n')
     print(f'{target}: {len(result)} bytes (excludes OpenConnect and dependencies)')

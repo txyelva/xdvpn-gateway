@@ -10,7 +10,7 @@
 
 新增独立的 [OpenWrt 插件](openwrt/README.md)：LuCI 界面、Go Hillstone SCVPN 核心及可选 OpenConnect 接入，提供手动白名单、私有公司预设和 IPv4 全局模式。
 
-- 状态：0.7.2，x86_64 已验证 Hillstone 连接；ARM64 已构建并运行 Linux 测试，路由器真机仍需补测。
+- 状态：0.7.3，x86_64 已验证 Hillstone 连接；ARM64 已构建并运行 Linux 测试，路由器真机仍需补测。
 - 设计：[openwrt/docs/DESIGN.md](openwrt/docs/DESIGN.md)
 - 验证与边界：[openwrt/docs/ACCEPTANCE.md](openwrt/docs/ACCEPTANCE.md)、[ARM / WAN 测试](openwrt/docs/PORTABILITY-VALIDATION.md)
 - OpenWrt 版独立维护自有分流规则，不修改其他代理配置；仅在已测试的组合下验证共存，不代表全部 OpenClash/Passwall 模式兼容。

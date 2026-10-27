@@ -15,12 +15,17 @@ class PriorityStatus(unittest.TestCase):
             script=(ROOT/'package/luci-app-xdvpn/root/usr/libexec/xdvpn/priority-status').read_text().replace('/var/run/xdvpn-priority', d)
             (p/'status').write_text(script)
             (p/'nft').write_text('''#!/bin/sh
-if [ "$1" = list ]; then
+if [ "$1" = list ] && [ "$2" = chain ]; then
+ [ "$SCENARIO" != no_nat_output ] || [ "$5" != nat_output ] || exit 1
+ exit 0
+elif [ "$1" = list ]; then
  echo 'table inet fw4 {'
  echo ' type filter hook prerouting priority mangle; policy accept;'
  if [ "$SCENARIO" = foreign ]; then echo 'table inet proxy {'; echo 'type filter hook prerouting priority -200; policy accept;'; fi
 else
  [ "$SCENARIO" != missing ] || exit 1
+ [ "$SCENARIO" != no_nat_output ] || [ "$6" != nat_output ] || exit 1
+ if [ "$SCENARIO" = nat_reordered ] && [ "$6" = nat_output ]; then echo 'jump proxy # handle 1'; fi
  [ "$SCENARIO" != reordered ] || echo 'jump proxy # handle 1'
  echo 'jump xdvpn_select comment "xdvpn-priority" # handle 2'
 fi
@@ -51,3 +56,8 @@ fi
         self.assertEqual(self.check('normal',True).returncode,0)
         self.assertNotEqual(self.check('reordered',True).returncode,0)
         self.assertNotEqual(self.check('missing',True).returncode,0)
+
+    def test_optional_nat_output(self):
+        self.assertEqual(self.check('no_nat_output',True).returncode,0)
+        self.assertEqual(json.loads(self.check('no_nat_output').stdout)['status'],'ordered')
+        self.assertNotEqual(self.check('nat_reordered',True).returncode,0)
